@@ -178,6 +178,7 @@ class LiveSession:
         needed_input = round(block * OUTPUT_RATE / model_rate)
 
         self.state = "streaming"
+        print(f"[realtime] streaming started: model_rate={model_rate} block={block}", flush=True)
         buffer = np.zeros(0, dtype=np.float32)
 
         while True:
@@ -200,6 +201,11 @@ class LiveSession:
                 self.inference_ms.append((time.perf_counter() - began) * 1000)
                 del self.inference_ms[:-200]
                 self.blocks += 1
+                if self.blocks % 25 == 0:
+                    print(
+                        f"[realtime] blocks={self.blocks} last_infer_ms={self.inference_ms[-1]:.0f}",
+                        flush=True,
+                    )
                 self.track.push(resample(converted, model_rate, OUTPUT_RATE))
 
 
@@ -232,6 +238,7 @@ async def offer(request: OfferRequest) -> dict:
 
     @pc.on("track")
     def on_track(track: MediaStreamTrack) -> None:
+        print(f"[realtime] incoming track: kind={track.kind}", flush=True)
         if track.kind == "audio":
             if session.task is not None:
                 session.task.cancel()
@@ -239,6 +246,7 @@ async def offer(request: OfferRequest) -> dict:
 
     @pc.on("connectionstatechange")
     async def on_state() -> None:
+        print(f"[realtime] state={pc.connectionState} ice={pc.iceConnectionState}", flush=True)
         if pc.connectionState in {"failed", "closed", "disconnected"}:
             session.state = pc.connectionState
             if session.task is not None:
@@ -254,6 +262,11 @@ async def offer(request: OfferRequest) -> dict:
     for transceiver in audio_transceivers:
         if transceiver.sender.track is None:
             pc.addTrack(session.track)
+    print(
+        "[realtime] transceivers: "
+        + ", ".join(f"{t.kind}/{t.direction}/track={t.sender.track is not None}" for t in pc.getTransceivers()),
+        flush=True,
+    )
 
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
