@@ -3,7 +3,6 @@ fastapi==0.115.12
 uvicorn[standard]==0.34.2
 python-multipart==0.0.20
 aiortc==1.11.0
-av==13.1.0
 librosa==0.10.2
 soundfile==0.12.1
 scipy==1.13.1
