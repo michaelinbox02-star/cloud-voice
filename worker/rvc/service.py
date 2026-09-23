@@ -52,9 +52,13 @@ def inside_data(raw: str, *, must_exist: bool, suffix_ok: bool = False) -> Path:
 def run(command: list[str], timeout: int = 7200) -> tuple[str, float]:
     """Run a project CLI step and return its output and duration."""
     began = time.perf_counter()
+    # The training scripts are invoked as files, so Python puts their own folder
+    # on sys.path rather than the project root; give them the root explicitly.
+    environment = {**os.environ, "PYTHONPATH": "/opt/rvc"}
     result = subprocess.run(
         command,
         cwd="/opt/rvc",
+        env=environment,
         capture_output=True,
         text=True,
         timeout=timeout,
