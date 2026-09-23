@@ -2,7 +2,10 @@
 fastapi==0.115.12
 uvicorn[standard]==0.34.2
 python-multipart==0.0.20
-aiortc==1.11.0
+# aiortc 1.11 pulls av>=14, which only builds against ffmpeg 7. 1.10 pairs with
+# av 13, which ships manylinux wheels and therefore needs no compiler.
+aiortc==1.10.0
+av==13.1.0
 librosa==0.10.2
 soundfile==0.12.1
 scipy==1.13.1
