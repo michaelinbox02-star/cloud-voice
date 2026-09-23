@@ -127,7 +127,8 @@ def convert(request: ConvertRequest) -> dict:
 
     command = [
         "python",
-        "infer/cli.py",
+        "-m",
+        "infer.cli",
         "--model",
         str(model),
         "--input",
@@ -203,16 +204,16 @@ def train(request: TrainRequest) -> dict:
     # 1. Slice and normalise the dataset.
     step(
         "preprocess",
-        ["python", "train/preprocess.py", str(dataset), "40000", "8", str(log_dir), "False", "3.7"],
+        ["python", "-m", "train.preprocess", str(dataset), "40000", "8", str(log_dir), "False", "3.7"],
     )
     # 2. Pitch track, then 3. content features, both on the GPU.
     step(
         "extract_f0",
-        ["python", "train/dataset/extract_f0.py", "cuda", "1", "0", "0", str(log_dir), "true"],
+        ["python", "-m", "train.dataset.extract_f0", "cuda", "1", "0", "0", str(log_dir), "true"],
     )
     step(
         "extract_hubert",
-        ["python", "train/dataset/extract_hubert_feature.py", "cuda:0", "1", "0", "0", str(log_dir), "v2", "true"],
+        ["python", "-m", "train.dataset.extract_hubert_feature", "cuda:0", "1", "0", "0", str(log_dir), "v2", "true"],
     )
 
     # 4. train.py expects config.json next to filelist.txt. The WebUI derives it
@@ -233,7 +234,8 @@ def train(request: TrainRequest) -> dict:
         "train",
         [
             "python",
-            "train/train.py",
+            "-m",
+            "train.train",
             "-e",
             experiment,
             "-sr",
@@ -265,7 +267,7 @@ def train(request: TrainRequest) -> dict:
     # 6. Retrieval index over the extracted features.
     step(
         "train_index",
-        ["python", "train/train_index.py", experiment, "v2", "/opt/rvc/assets/indices", "8", "single"],
+        ["python", "-m", "train.train_index", experiment, "v2", "/opt/rvc/assets/indices", "8", "single"],
     )
 
     weights = sorted((asset_tools.ASSETS / "weights").glob("*.pth"), key=lambda p: p.stat().st_mtime, reverse=True)
