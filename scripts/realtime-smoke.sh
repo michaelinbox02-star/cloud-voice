@@ -18,7 +18,7 @@ fi
 
 "${docker_cmd[@]}" build -t cloud-voice-realtime:dev "${repo_dir}/worker/realtime"
 
-"${docker_cmd[@]}" run --rm --gpus all \
+"${docker_cmd[@]}" run --rm -i --gpus all \
   -v cloud-voice-realtime-checkpoints:/opt/seed-vc-realtime/checkpoints \
   -v cloud-voice-realtime-data:/data \
   cloud-voice-realtime:dev \
@@ -63,4 +63,6 @@ print(f"output rms={rms:.5f}")
 raise SystemExit(0 if rms > 1e-3 else 1)
 PY
 
+"${docker_cmd[@]}" run --rm -v cloud-voice-realtime-data:/data cloud-voice-realtime:dev \
+  python -c "import os,sys; p='/data/realtime-smoke-out.wav'; size=os.path.getsize(p) if os.path.exists(p) else 0; print('artifact bytes:', size); sys.exit(0 if size > 100000 else 1)"
 echo "Realtime engine smoke test passed."
