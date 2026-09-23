@@ -216,18 +216,17 @@ def train(request: TrainRequest) -> dict:
         ["python", "-m", "train.dataset.extract_hubert_feature", "cuda:0", "1", "0", "0", str(log_dir), "v2", "true"],
     )
 
-    # 4. train.py expects config.json next to filelist.txt. The WebUI derives it
-    # from the pretrained generator, so do the same.
-    import torch
+    # 4. train.py expects config.json beside filelist.txt. The WebUI picks a
+    # shipped template: v2 uses configs/v1 for 40k and configs/v2 otherwise.
+    template = "v1" if request.sample_rate_option == "40k" else "v2"
+    template_path = Path("/opt/rvc/configs") / template / f"{request.sample_rate_option}.json"
+    if not template_path.is_file():
+        raise HTTPException(status_code=500, detail=f"Missing training template: {template_path}")
+    config = json.loads(template_path.read_text())
+    config.pop("speaker_info", None)
+    (log_dir / "config.json").write_text(json.dumps(config, ensure_ascii=False, indent=4, sort_keys=True) + "\n")
 
     pretrained = "/opt/rvc/assets/pretrained_v2/f0G40k.pth" if request.f0 else "/opt/rvc/assets/pretrained_v2/G40k.pth"
-    checkpoint = torch.load(pretrained, map_location="cpu")
-    config = checkpoint.get("config")
-    if not config:
-        raise HTTPException(status_code=500, detail="Pretrained checkpoint carries no config block")
-    config.setdefault("model", {})
-    config["model"].setdefault("spk_embed_dim", 109)
-    (log_dir / "config.json").write_text(json.dumps(config, indent=2))
 
     # 5. Fine-tune. `-sw 1` also writes the inference-ready small model.
     step(
