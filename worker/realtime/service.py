@@ -183,16 +183,24 @@ class LiveSession:
         self.state = "streaming"
         print(f"[realtime] streaming started: model_rate={model_rate} block={block}", flush=True)
         buffer = np.zeros(0, dtype=np.float32)
+        inbound = 0
 
         while True:
             frame = await incoming.recv()
-            if self.blocks == 0 and not hasattr(self, "_first_frame_logged"):
-                self._first_frame_logged = True
-                print("[realtime] first inbound frame received", flush=True)
-            frame = frame.reformat(format="fltp")
-            data = frame.to_ndarray()
-            data = data.mean(axis=0) if frame.layout.nb_channels > 1 else data.reshape(-1)
-            buffer = np.concatenate((buffer, data.astype(np.float32)))
+            inbound += 1
+            if inbound <= 2 or inbound % 100 == 0:
+                print(
+                    f"[realtime] inbound frames={inbound} buffer={len(buffer)} samples={frame.samples}",
+                    flush=True,
+                )
+            try:
+                frame = frame.reformat(format="fltp")
+                data = frame.to_ndarray()
+                data = data.mean(axis=0) if frame.layout.nb_channels > 1 else data.reshape(-1)
+                buffer = np.concatenate((buffer, data.astype(np.float32)))
+            except Exception as error:  # noqa: BLE001
+                print(f"[realtime] frame decode failed: {error!r}", flush=True)
+                continue
 
             while len(buffer) >= needed_input:
                 chunk = buffer[:needed_input]
