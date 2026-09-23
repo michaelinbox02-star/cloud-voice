@@ -23,6 +23,10 @@ services:
     gpus: all
     env_file:
       - ../.env
+    ports:
+      # Loopback only: the control plane reaches the engine over the compose
+      # network, and this mapping exists for health checks and debugging.
+      - "127.0.0.1:8790:8790"
     volumes:
       - voice_data:/data
       - seed_checkpoints:/opt/seed-vc/checkpoints
