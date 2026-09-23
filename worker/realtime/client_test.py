@@ -142,7 +142,7 @@ async def main() -> int:
     deadline = asyncio.get_event_loop().time() + SECONDS
     while asyncio.get_event_loop().time() < deadline:
         try:
-            frame = await asyncio.wait_for(track.recv(), timeout=5)
+            frame = await asyncio.wait_for(track.recv(), timeout=15)
         except (asyncio.TimeoutError, MediaStreamError) as error:
             print(f"receive stopped after {len(received)} frames: {type(error).__name__}", flush=True)
             break

@@ -207,9 +207,10 @@ class LiveSession:
                 self.inference_ms.append((time.perf_counter() - began) * 1000)
                 del self.inference_ms[:-200]
                 self.blocks += 1
-                if self.blocks % 25 == 0:
+                if self.blocks <= 3 or self.blocks % 25 == 0:
                     print(
-                        f"[realtime] blocks={self.blocks} last_infer_ms={self.inference_ms[-1]:.0f}",
+                        f"[realtime] blocks={self.blocks} infer_ms={self.inference_ms[-1]:.0f}"
+                        f" queued={self.track.queue.qsize()}",
                         flush=True,
                     )
                 self.track.push(resample(converted, model_rate, OUTPUT_RATE))
