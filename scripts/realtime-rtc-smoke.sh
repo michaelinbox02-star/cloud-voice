@@ -33,9 +33,8 @@ fi
 
 # Copy a known source clip into the realtime volume: the engine image ships the
 # upstream example audio, and the client reads it from there.
-"${docker_cmd[@]}" run --rm --user "$(id -u):$(id -g)" \
-  -v cloud-voice-realtime-data:/out cloud-voice-seed:dev \
-  sh -c 'cp examples/source/source_s1.wav /out/rtc-source.wav'
+"${docker_cmd[@]}" run --rm -v cloud-voice-realtime-data:/out cloud-voice-seed:dev \
+  sh -c 'cp examples/source/source_s1.wav /out/rtc-source.wav && chmod 644 /out/rtc-source.wav'
 
 echo "Streaming a real file through the worker over WebRTC..."
 # The client runs inside the realtime image (it has aiortc) with host
