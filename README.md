@@ -4,7 +4,7 @@ Cloud Voice Studio is a Windows desktop client for voice conversion backed by a 
 
 ## Status
 
-The repository is under active development. The current runnable milestone covers GPU preflight and an authenticated worker health service. Voice conversion and live streaming are not yet available.
+The repository is under active development. The current runnable milestone covers GPU preflight, SSH deployment from the Windows desktop app, and an authenticated worker health service. Voice conversion and live streaming are not yet available.
 
 ## Layout
 

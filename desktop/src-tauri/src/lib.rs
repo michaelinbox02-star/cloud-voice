@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command;
 use tauri::Manager;
 
-const WORKER_RELEASE: &str = "c45fc119f688ceadddf668a3460f500b200532fd";
+const WORKER_RELEASE: &str = "efa11b2abac3392ae51eea3f3844bab3d1e3642e";
 
 #[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
