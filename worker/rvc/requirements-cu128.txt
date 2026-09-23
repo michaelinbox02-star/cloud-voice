@@ -1,0 +1,2 @@
+# PyTorch's cu128 wheel supplies CUDA 12 and cuDNN 9 libraries.
+onnxruntime-gpu==1.21.0

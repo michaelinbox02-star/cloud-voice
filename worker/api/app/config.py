@@ -21,6 +21,9 @@ ENGINE_TOKEN: str = os.environ.get("CLOUD_VOICE_ENGINE_TOKEN", "")
 SEED_ENGINE_URL: str = os.environ.get("CLOUD_VOICE_SEED_URL", "http://seed:8790")
 RVC_ENGINE_URL: str = os.environ.get("CLOUD_VOICE_RVC_URL", "http://rvc:8792")
 TTS_ENGINE_URL: str = os.environ.get("CLOUD_VOICE_TTS_URL", "http://tts:8793")
+CUDA_VARIANT: str = os.environ.get("CLOUD_VOICE_CUDA_VARIANT", "unknown")
+COMPUTE_CAPABILITY: str = os.environ.get("CLOUD_VOICE_COMPUTE_CAPABILITY", "unknown")
+DRIVER_VERSION: str = os.environ.get("CLOUD_VOICE_DRIVER_VERSION", "unknown")
 
 DATASETS_DIR: Path = DATA_ROOT / "datasets"
 BACKUPS_DIR: Path = DATA_ROOT / "backups"

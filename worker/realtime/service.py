@@ -12,11 +12,13 @@ to the host's public address, which is why the container uses host networking.
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import hashlib
 import hmac
 import json
 import os
 import time
+from contextlib import asynccontextmanager, suppress
 from fractions import Fraction
 from pathlib import Path
 
@@ -37,7 +39,94 @@ OUTPUT_RATE = 48000
 OUTPUT_FRAME_SAMPLES = 960  # 20 ms of Opus
 MAX_QUEUED_FRAMES = 40
 
-app = FastAPI(title="Cloud Voice Studio Realtime", version="0.1.0", docs_url=None, redoc_url=None)
+LAST_VOICE = DATA_ROOT / "realtime-last-voice.json"
+STATUS_FILE = DATA_ROOT / "realtime-health.json"
+_warm_state: dict[str, str | None] = {"status": "warming", "detail": None}
+
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    warm_task = asyncio.create_task(_warm_on_boot())
+    status_task = asyncio.create_task(_publish_status())
+    yield
+    warm_task.cancel()
+    status_task.cancel()
+    with suppress(asyncio.CancelledError):
+        await warm_task
+    with suppress(asyncio.CancelledError):
+        await status_task
+    STATUS_FILE.unlink(missing_ok=True)
+
+
+app = FastAPI(title="Cloud Voice Studio Realtime", version="0.1.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+
+
+class GpuLease:
+    def __init__(self) -> None:
+        DATA_ROOT.mkdir(parents=True, exist_ok=True)
+        self.handle = (DATA_ROOT / "gpu.lock").open("a+b")
+
+    def acquire(self) -> bool:
+        try:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            self.close()
+            return False
+
+    def close(self) -> None:
+        if not self.handle.closed:
+            fcntl.flock(self.handle.fileno(), fcntl.LOCK_UN)
+            self.handle.close()
+
+
+async def ensure_runtime(ticket: dict) -> "StreamingConverter":
+    _warm_state["status"] = "warming"
+    try:
+        converter = await runtime.ensure(ticket)
+    except Exception as error:
+        _warm_state["status"] = "unavailable"
+        _warm_state["detail"] = str(error)[:500]
+        raise
+    _warm_state["status"] = "ready"
+    _warm_state["detail"] = None
+    LAST_VOICE.write_text(json.dumps({key: ticket.get(key) for key in (
+        "reference_path", "preset", "diffusion_steps", "inference_cfg_rate"
+    )}))
+    return converter
+
+
+async def _warm_on_boot() -> None:
+    try:
+        if not LAST_VOICE.is_file():
+            _warm_state["status"] = "ready"
+            return
+        ticket = json.loads(LAST_VOICE.read_text())
+        if not Path(ticket.get("reference_path", "")).is_file():
+            _warm_state["status"] = "ready"
+            return
+        lease = GpuLease()
+        try:
+            await asyncio.to_thread(fcntl.flock, lease.handle.fileno(), fcntl.LOCK_EX)
+            await ensure_runtime(ticket)
+        finally:
+            lease.close()
+    except Exception as error:  # noqa: BLE001 - health reports the failure
+        _warm_state["status"] = "unavailable"
+        _warm_state["detail"] = str(error)[:500]
+        print(f"[realtime] warmup failed: {error}", flush=True)
+
+
+async def _publish_status() -> None:
+    while True:
+        try:
+            DATA_ROOT.mkdir(parents=True, exist_ok=True)
+            staging = STATUS_FILE.with_suffix(".tmp")
+            staging.write_text(json.dumps({**health(), "updated_at": time.time()}))
+            staging.replace(STATUS_FILE)
+        except OSError as error:
+            print(f"[realtime] status write failed: {error}", flush=True)
+        await asyncio.sleep(2)
 
 
 def frame_to_mono(frame: av.AudioFrame) -> np.ndarray:
@@ -185,9 +274,10 @@ class ConvertedTrack(MediaStreamTrack):
 
 
 class LiveSession:
-    def __init__(self, session_id: str, ticket: dict) -> None:
+    def __init__(self, session_id: str, ticket: dict, lease: GpuLease) -> None:
         self.id = session_id
         self.ticket = ticket
+        self.lease = lease
         self.pc: RTCPeerConnection | None = None
         self.track = ConvertedTrack()
         self.task: asyncio.Task | None = None
@@ -252,7 +342,8 @@ class LiveSession:
 @app.get("/health")
 def health() -> dict:
     return {
-        "status": "ready",
+        "status": _warm_state["status"],
+        "detail": _warm_state["detail"],
         "runtime": runtime.status(),
         "active_session": active.id if active else None,
         "state": active.state if active else "idle",
@@ -263,17 +354,27 @@ def health() -> dict:
 @app.post("/v1/offer")
 async def offer(request: OfferRequest) -> dict:
     ticket = read_ticket(request.session_id, request.token)
-    converter = await runtime.ensure(ticket)
+    global active
+    if active is not None:
+        if active.pc is not None:
+            await active.pc.close()
+        active.lease.close()
+        active = None
+    lease = GpuLease()
+    if not lease.acquire():
+        raise HTTPException(status_code=409, detail="GPU is busy with another job or realtime session")
+    try:
+        converter = await ensure_runtime(ticket)
+    except Exception:
+        lease.close()
+        raise
 
     pc = RTCPeerConnection(
         RTCConfiguration(iceServers=[RTCIceServer(urls=["stun:stun.l.google.com:19302"])])
     )
-    session = LiveSession(request.session_id, ticket)
+    session = LiveSession(request.session_id, ticket, lease)
     session.pc = pc
 
-    global active
-    if active is not None and active.pc is not None:
-        await active.pc.close()
     active = session
 
     @pc.on("track")
@@ -291,37 +392,44 @@ async def offer(request: OfferRequest) -> dict:
             session.state = pc.connectionState
             if session.task is not None:
                 session.task.cancel()
+            session.lease.close()
 
     # Consume the offer first, then attach our outgoing audio to the transceiver
     # the offer created. Adding the track before setRemoteDescription appends a
     # second m-line that the client never asked for, and the answer is rejected.
-    await pc.setRemoteDescription(RTCSessionDescription(sdp=request.sdp, type=request.type))
-    audio_transceivers = [t for t in pc.getTransceivers() if t.kind == "audio"]
-    if not audio_transceivers:
-        raise HTTPException(status_code=400, detail="The client offered no audio track")
-    for transceiver in audio_transceivers:
-        if transceiver.sender.track is None:
-            pc.addTrack(session.track)
-    print(
-        "[realtime] transceivers: "
-        + ", ".join(f"{t.kind}/{t.direction}/track={t.sender.track is not None}" for t in pc.getTransceivers()),
-        flush=True,
-    )
+    try:
+        await pc.setRemoteDescription(RTCSessionDescription(sdp=request.sdp, type=request.type))
+        audio_transceivers = [t for t in pc.getTransceivers() if t.kind == "audio"]
+        if not audio_transceivers:
+            raise HTTPException(status_code=400, detail="The client offered no audio track")
+        for transceiver in audio_transceivers:
+            if transceiver.sender.track is None:
+                pc.addTrack(session.track)
+        print(
+            "[realtime] transceivers: "
+            + ", ".join(f"{t.kind}/{t.direction}/track={t.sender.track is not None}" for t in pc.getTransceivers()),
+            flush=True,
+        )
 
-    answer = await pc.createAnswer()
-    await pc.setLocalDescription(answer)
+        answer = await pc.createAnswer()
+        await pc.setLocalDescription(answer)
 
-    deadline = time.time() + 8
-    while pc.iceGatheringState != "complete" and time.time() < deadline:
-        await asyncio.sleep(0.1)
+        deadline = time.time() + 8
+        while pc.iceGatheringState != "complete" and time.time() < deadline:
+            await asyncio.sleep(0.1)
 
-    return {
-        "sdp": pc.localDescription.sdp,
-        "type": pc.localDescription.type,
-        "model_rate": converter.sample_rate,
-        "block_seconds": round(converter.block_seconds, 4),
-        "output_sample_rate": OUTPUT_RATE,
-    }
+        return {
+            "sdp": pc.localDescription.sdp,
+            "type": pc.localDescription.type,
+            "model_rate": converter.sample_rate,
+            "block_seconds": round(converter.block_seconds, 4),
+            "output_sample_rate": OUTPUT_RATE,
+        }
+    except Exception:
+        await pc.close()
+        lease.close()
+        active = None
+        raise
 
 
 @app.post("/v1/sessions/{session_id}/close")
@@ -332,6 +440,7 @@ async def close(session_id: str) -> dict:
             active.task.cancel()
         if active.pc is not None:
             await active.pc.close()
+        active.lease.close()
         active = None
     return {"closed": session_id}
 

@@ -1,5 +1,8 @@
 # RVC v2 inference and training, pinned to the maintained upstream.
 FROM python:3.12-slim-bookworm
+ARG TORCH_VERSION=2.7.1
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu118
+ARG RVC_CUDA_VARIANT=cu118
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -12,11 +15,12 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python -m pip install \
-    torch==2.7.1+cu118 torchaudio==2.7.1+cu118 \
-    --index-url https://download.pytorch.org/whl/cu118
+    torch==${TORCH_VERSION}+${RVC_CUDA_VARIANT} torchaudio==${TORCH_VERSION}+${RVC_CUDA_VARIANT} \
+    --index-url ${TORCH_INDEX_URL}
 
 COPY requirements.txt /tmp/requirements.txt
-RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
+COPY requirements-cu118.txt requirements-cu128.txt /tmp/
+RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt -r /tmp/requirements-${RVC_CUDA_VARIANT}.txt
 
 RUN git clone https://github.com/RVC-Project/Retrieval-based-Voice-Conversion-WebUI.git /opt/rvc \
     && cd /opt/rvc \

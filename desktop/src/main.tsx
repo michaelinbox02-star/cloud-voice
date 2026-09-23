@@ -54,7 +54,7 @@ function App() {
       setDegraded(false);
       setSystem(info);
       setVoiceCount(info.voices);
-      setEngineReady(info.engines?.["seed-vc"]?.models_loaded === true);
+      setEngineReady(info.engines?.["seed-vc"]?.status === "ready");
       setOnline(true);
     } catch {
       // Services restart during an install and a long build restarts every

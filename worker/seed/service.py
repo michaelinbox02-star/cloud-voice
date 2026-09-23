@@ -11,6 +11,7 @@ import hmac
 import os
 import threading
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -22,11 +23,17 @@ DATA_ROOT = Path(os.environ.get("CLOUD_VOICE_DATA_ROOT", "/data")).resolve()
 ALLOWED_SUFFIXES = {".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac"}
 MAX_DIFFUSION_STEPS = 100
 
-app = FastAPI(title="Cloud Voice Studio Seed-VC Engine", version="0.1.0", docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    threading.Thread(target=_warm_background, name="seed-warmup", daemon=True).start()
+    yield
+
+
+app = FastAPI(title="Cloud Voice Studio Seed-VC Engine", version="0.1.0", docs_url=None, redoc_url=None, lifespan=lifespan)
 
 _engine_lock = threading.Lock()
 _convert_lock = threading.Lock()
-_state: dict[str, object] = {"loaded": False, "load_seconds": None}
+_state: dict[str, object] = {"loaded": False, "load_seconds": None, "status": "warming", "detail": None}
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
@@ -84,7 +91,22 @@ def ensure_engine(args: argparse.Namespace) -> None:
         return
     with _engine_lock:
         if not _state["loaded"]:
-            load_engine(args)
+            _state["status"] = "warming"
+            try:
+                load_engine(args)
+            except Exception as error:
+                _state["status"] = "unavailable"
+                _state["detail"] = str(error)[:500]
+                raise
+            _state["status"] = "ready"
+            _state["detail"] = None
+
+
+def _warm_background() -> None:
+    try:
+        ensure_engine(build_args())
+    except Exception as error:  # noqa: BLE001 - health reports the failure
+        print(f"[seed] warmup failed: {error}", flush=True)
 
 
 class ConvertRequest(BaseModel):
@@ -102,14 +124,21 @@ class ConvertRequest(BaseModel):
 
 @app.get("/health", dependencies=[Depends(require_token)])
 def health() -> dict:
-    import torch
+    cuda_available = None
+    device = "loading" if _state["status"] == "warming" else "unknown"
+    if _state["loaded"]:
+        import torch
+
+        cuda_available = torch.cuda.is_available()
+        device = torch.cuda.get_device_name(0) if cuda_available else "cpu"
 
     return {
-        "status": "ready" if _state["loaded"] else "cold",
+        "status": _state["status"],
+        "detail": _state["detail"],
         "models_loaded": bool(_state["loaded"]),
         "model_load_seconds": _state["load_seconds"],
-        "cuda_available": torch.cuda.is_available(),
-        "device": torch.cuda.get_device_name(0) if torch.cuda.is_available() else "cpu",
+        "cuda_available": cuda_available,
+        "device": device,
         "capabilities": ["seed-vc-v2-offline"],
     }
 

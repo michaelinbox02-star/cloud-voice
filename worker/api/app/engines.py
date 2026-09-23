@@ -33,7 +33,7 @@ def _post(url: str, payload: dict, timeout: int) -> dict:
         raise EngineError(f"Engine unreachable: {error.reason}") from error
 
 
-def _get(url: str, timeout: int = 15) -> dict:
+def _get(url: str, timeout: int = 3) -> dict:
     request = urllib.request.Request(
         url,
         headers={"Authorization": f"Bearer {config.ENGINE_TOKEN}"},
@@ -63,6 +63,10 @@ def rvc_health() -> dict:
     return _get(f"{config.RVC_ENGINE_URL}/health")
 
 
+def rvc_warmup() -> dict:
+    return _post(f"{config.RVC_ENGINE_URL}/v1/warmup", {}, timeout=1800)
+
+
 def rvc_prepare(training: bool) -> dict:
     return _post(f"{config.RVC_ENGINE_URL}/v1/assets/prepare?training={str(training).lower()}", {}, timeout=3600)
 
@@ -78,6 +82,10 @@ def rvc_train(payload: dict) -> dict:
 
 def tts_health() -> dict:
     return _get(f"{config.TTS_ENGINE_URL}/health")
+
+
+def tts_warmup() -> dict:
+    return _post(f"{config.TTS_ENGINE_URL}/v1/warmup", {}, timeout=1800)
 
 
 def tts_speech(payload: dict) -> dict:

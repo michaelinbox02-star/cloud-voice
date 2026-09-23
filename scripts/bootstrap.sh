@@ -54,6 +54,76 @@ if ! command -v nvidia-smi >/dev/null || ! nvidia-smi -L >/dev/null; then
   exit 1
 fi
 
+# Resolve the CUDA image before installing Docker or building anything. Query
+# every GPU: a mixed host needs a wheel that supports all of its devices.
+driver_version="$(nvidia-smi --query-gpu=driver_version --format=csv,noheader,nounits | head -1 | tr -d '[:space:]')"
+compute_caps="$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader,nounits 2>/dev/null || true)"
+if [[ -z "${compute_caps}" || "${compute_caps}" == *"Not Supported"* ]]; then
+  if ! command -v python3 >/dev/null 2>&1; then
+    echo "nvidia-smi cannot report compute capability; install python3 for the CUDA driver probe." >&2
+    exit 1
+  fi
+  compute_caps="$(python3 "${repo_dir}/scripts/gpu_capability.py")"
+fi
+if [[ -z "${driver_version}" || -z "${compute_caps}" ]]; then
+  echo "Could not detect NVIDIA driver version and GPU compute capability." >&2
+  exit 1
+fi
+
+version_at_least() {
+  [[ "$(printf '%s\n%s\n' "$1" "$2" | sort -V | head -1)" == "$2" ]]
+}
+
+cuda_variant=""
+while IFS= read -r cap; do
+  cap="$(printf '%s' "${cap}" | tr -d '[:space:]')"
+  if [[ ! "${cap}" =~ ^[0-9]+\.[0-9]+$ ]]; then
+    echo "Invalid GPU compute capability: '${cap}'." >&2
+    exit 1
+  fi
+  major="${cap%%.*}"
+  minor="${cap#*.}"
+  if (( major < 7 )); then
+    echo "GPU sm_${major}${minor} is unsupported; compute capability 7.0 or newer is required." >&2
+    exit 1
+  fi
+  selected="cu121"
+  if (( major > 9 || (major == 9 && minor > 0) )); then selected="cu128"; fi
+  if [[ -n "${cuda_variant}" && "${cuda_variant}" != "${selected}" ]]; then
+    echo "Mixed GPU generations need different PyTorch builds; use GPUs from one CUDA variant on this worker." >&2
+    exit 1
+  fi
+  cuda_variant="${selected}"
+done <<< "${compute_caps}"
+
+if [[ "${cuda_variant}" == "cu128" ]]; then
+  minimum_driver="570.26"
+  minimum_cuda="12.8"
+  torch_version="2.7.1"
+  torch_index_url="https://download.pytorch.org/whl/cu128"
+  pytorch_base="pytorch/pytorch:2.7.1-cuda12.8-cudnn9-runtime@sha256:c16f4c749e2d9e96878875cdf6cc45cddda1d1a36fddd371dd6f2360f1b6e2a2"
+  cuda_test_image="nvidia/cuda:12.8.1-base-ubuntu24.04"
+else
+  minimum_driver="530.30.02"
+  minimum_cuda="12.1"
+  torch_version="2.4.0"
+  torch_index_url="https://download.pytorch.org/whl/cu121"
+  pytorch_base="pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime@sha256:68c022c2f4627943a6f3e574cfd2c8ae4256210d5f66ae2b117942e0a8d4fa9d"
+  cuda_test_image="nvidia/cuda:12.1.1-base-ubuntu22.04"
+fi
+
+if ! version_at_least "${driver_version}" "${minimum_driver}"; then
+  echo "GPU requires ${cuda_variant}, but driver ${driver_version} is too old; install NVIDIA driver ${minimum_driver} or newer." >&2
+  exit 1
+fi
+max_cuda="$(nvidia-smi | sed -nE 's/.*CUDA Version: ([0-9]+\.[0-9]+).*/\1/p' | head -1)"
+if [[ -n "${max_cuda}" ]] && ! version_at_least "${max_cuda}" "${minimum_cuda}"; then
+  echo "Driver reports CUDA ${max_cuda}; ${cuda_variant} requires CUDA ${minimum_cuda} (driver ${minimum_driver} or newer)." >&2
+  exit 1
+fi
+compute_capability="$(printf '%s\n' "${compute_caps}" | sort -Vu | paste -sd, -)"
+printf 'GPU compute capability: %s; driver: %s; selected: %s\n' "${compute_capability}" "${driver_version}" "${cuda_variant}"
+
 install_docker_from_distro() {
   "${SUDO[@]}" apt-get update
   "${SUDO[@]}" apt-get install -y docker.io
@@ -102,7 +172,7 @@ if ! command -v nvidia-container-cli >/dev/null; then
   restart_docker_service
 fi
 
-"${SUDO[@]}" docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi -L
+"${SUDO[@]}" docker run --rm --gpus all "${cuda_test_image}" nvidia-smi -L
 
 # Create any missing secret without disturbing the ones already in use.
 umask 077
@@ -117,18 +187,54 @@ ensure_secret() {
 }
 ensure_secret CLOUD_VOICE_API_TOKEN
 ensure_secret CLOUD_VOICE_ENGINE_TOKEN
+set_env() {
+  local name="$1" value="$2"
+  sed -i "/^${name}=/d" "${repo_dir}/.env"
+  printf '%s=%s\n' "${name}" "${value}" >> "${repo_dir}/.env"
+}
+set_env CLOUD_VOICE_CUDA_VARIANT "${cuda_variant}"
+set_env CLOUD_VOICE_COMPUTE_CAPABILITY "${compute_capability}"
+set_env CLOUD_VOICE_DRIVER_VERSION "${driver_version}"
+set_env PYTORCH_BASE_IMAGE "${pytorch_base}"
+set_env TORCH_VERSION "${torch_version}"
+set_env TORCH_INDEX_URL "${torch_index_url}"
+if [[ "${cuda_variant}" == "cu128" ]]; then
+  set_env RVC_TORCH_VERSION "2.7.1"
+  set_env RVC_TORCH_INDEX_URL "https://download.pytorch.org/whl/cu128"
+  set_env RVC_CUDA_VARIANT "cu128"
+else
+  set_env RVC_TORCH_VERSION "2.7.1"
+  set_env RVC_TORCH_INDEX_URL "https://download.pytorch.org/whl/cu118"
+  set_env RVC_CUDA_VARIANT "cu118"
+fi
 chmod 600 "${repo_dir}/.env"
 
 cd "${repo_dir}"
-"${SUDO[@]}" docker compose -f worker/compose.yaml up -d --build
+"${SUDO[@]}" docker compose --env-file .env -f worker/compose.yaml up -d --build
 
 api_token="$(sed -n 's/^CLOUD_VOICE_API_TOKEN=//p' .env)"
+api_ready="no"
 for _ in {1..40}; do
   if curl --silent --fail -H "Authorization: Bearer ${api_token}" http://127.0.0.1:8765/v1/health; then
     printf '\nControl plane health check passed.\n'
+    api_ready="yes"
     break
   fi
   sleep 3
+done
+if [[ "${api_ready}" != "yes" ]]; then
+  echo "Control plane failed to become healthy; inspect docker compose logs." >&2
+  exit 1
+fi
+
+# Startup tasks perform the first load. These requests also retry a failed load
+# after the API is reachable, without making provisioning wait for downloads.
+for engine in seed-vc rvc tts; do
+  nohup curl --silent --fail --max-time 1800 \
+    -H "Authorization: Bearer ${api_token}" \
+    -X POST "http://127.0.0.1:8765/v1/engines/${engine}/warmup" \
+    >/dev/null 2>&1 </dev/null &
+  disown
 done
 
 # Engine containers pull multi-gigabyte checkpoints on first start. Report
@@ -152,7 +258,7 @@ for _ in {1..10}; do
   sleep 3
 done
 
-printf '\nControl plane: healthy\nSeed-VC engine: %s\nRealtime engine: %s\n' "${seed_ready}" "${realtime_ready}"
+printf '\nControl plane: healthy\nSeed-VC responding: %s\nRealtime responding: %s\n' "${seed_ready}" "${realtime_ready}"
 if [[ "${seed_ready}" != "yes" || "${realtime_ready}" != "yes" ]]; then
   printf 'Engines download models on first start. Check the service logs with: docker compose -f worker/compose.yaml logs\n'
 fi

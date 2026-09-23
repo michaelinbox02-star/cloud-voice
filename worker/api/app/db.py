@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS jobs (
     kind TEXT NOT NULL,
     status TEXT NOT NULL,
     engine TEXT NOT NULL,
+    lane TEXT NOT NULL DEFAULT 'gpu',
     voice_id TEXT,
     params_json TEXT NOT NULL DEFAULT '{}',
     input_path TEXT,
@@ -68,6 +69,9 @@ def connection() -> sqlite3.Connection:
         _connection = sqlite3.connect(config.DATABASE_PATH, check_same_thread=False)
         _connection.row_factory = sqlite3.Row
         _connection.executescript(SCHEMA)
+        columns = {row[1] for row in _connection.execute("PRAGMA table_info(jobs)")}
+        if "lane" not in columns:
+            _connection.execute("ALTER TABLE jobs ADD COLUMN lane TEXT NOT NULL DEFAULT 'gpu'")
         _connection.commit()
     return _connection
 
@@ -147,12 +151,14 @@ def delete_voice(voice_id: str) -> None:
     execute("DELETE FROM voices WHERE id = ?", (voice_id,))
 
 
-def create_job(*, kind: str, engine: str, voice_id: str | None, params: dict[str, Any]) -> dict[str, Any]:
+def create_job(*, kind: str, engine: str, lane: str, voice_id: str | None, params: dict[str, Any]) -> dict[str, Any]:
+    if lane not in {"gpu", "cpu", "io"}:
+        raise ValueError(f"Unknown job lane: {lane}")
     job_id = new_id("job")
     execute(
-        "INSERT INTO jobs (id, kind, status, engine, voice_id, params_json, created_at)"
-        " VALUES (?, ?, 'queued', ?, ?, ?, ?)",
-        (job_id, kind, engine, voice_id, json.dumps(params), now()),
+        "INSERT INTO jobs (id, kind, status, engine, lane, voice_id, params_json, created_at)"
+        " VALUES (?, ?, 'queued', ?, ?, ?, ?, ?)",
+        (job_id, kind, engine, lane, voice_id, json.dumps(params), now()),
     )
     return get_job(job_id)  # type: ignore[return-value]
 

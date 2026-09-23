@@ -20,7 +20,7 @@ export type Gpu = {
 export type Disk = { total_gib: number; used_gib: number; free_gib: number };
 
 export type EngineHealth = {
-  status: string;
+  status: "ready" | "warming" | "unavailable";
   models_loaded?: boolean;
   device?: string;
   detail?: string;
@@ -29,6 +29,9 @@ export type EngineHealth = {
 
 export type SystemInfo = {
   gpus: Gpu[];
+  compute_capability: string;
+  cuda_variant: string;
+  driver_version: string;
   disk: Disk;
   engines: Record<string, EngineHealth>;
   voices: number;
@@ -68,6 +71,7 @@ export type Job = {
   kind: string;
   status: JobStatus;
   engine: string;
+  lane: "gpu" | "cpu" | "io";
   voice_id: string | null;
   params: Record<string, unknown>;
   output_path: string | null;

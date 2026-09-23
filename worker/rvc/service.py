@@ -11,7 +11,9 @@ import os
 import random
 import shutil
 import subprocess
+import threading
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, Header, HTTPException
@@ -25,7 +27,36 @@ DATA_ROOT = Path(os.environ.get("CLOUD_VOICE_DATA_ROOT", "/data")).resolve()
 ENGINE_TOKEN = os.environ.get("CLOUD_VOICE_ENGINE_TOKEN", "")
 AUDIO_SUFFIXES = {".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac"}
 
-app = FastAPI(title="Cloud Voice Studio RVC Engine", version="0.1.0", docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    threading.Thread(target=_warm_background, name="rvc-warmup", daemon=True).start()
+    yield
+
+
+app = FastAPI(title="Cloud Voice Studio RVC Engine", version="0.1.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+_warm_lock = threading.Lock()
+_state: dict[str, str | None] = {"status": "warming", "detail": None}
+
+
+def warmup_assets() -> dict:
+    with _warm_lock:
+        _state["status"] = "warming"
+        try:
+            result = asset_tools.prepare(training=True)
+        except Exception as error:
+            _state["status"] = "unavailable"
+            _state["detail"] = str(error)[:500]
+            raise
+        _state["status"] = "ready"
+        _state["detail"] = None
+        return result
+
+
+def _warm_background() -> None:
+    try:
+        warmup_assets()
+    except Exception as error:  # noqa: BLE001 - health reports the failure
+        print(f"[rvc] warmup failed: {error}", flush=True)
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
@@ -153,7 +184,12 @@ def asset_state() -> dict:
 
 @app.get("/health", dependencies=[Depends(require_token)])
 def health() -> dict:
-    return {"status": "ready", "assets": asset_state(), "capabilities": ["rvc-v2-convert", "rvc-v2-train"]}
+    return {"status": _state["status"], "detail": _state["detail"], "assets": asset_state(), "capabilities": ["rvc-v2-convert", "rvc-v2-train"]}
+
+
+@app.post("/v1/warmup", dependencies=[Depends(require_token)])
+def warmup() -> dict:
+    return {"status": "ready", "assets": warmup_assets()}
 
 
 @app.post("/v1/assets/prepare", dependencies=[Depends(require_token)])

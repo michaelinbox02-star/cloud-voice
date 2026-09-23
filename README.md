@@ -26,7 +26,13 @@ interface. Every model runs on the rented GPU.
   between workers in one archive.
 - **Provisioning** — `scripts/bootstrap.sh` turns a clean Ubuntu 24.04 server
   with an NVIDIA driver into a working worker, generating credentials and
-  validating GPU containers along the way.
+  validating GPU containers along the way. It selects the CUDA image from GPU
+  compute capability and driver version before building.
+
+Engines now warm on startup and report readiness in the Server panel. Pure TTS
+and backup work have CPU capacity while GPU training runs; GPU conversion and
+realtime share a single GPU lease. These updates still need timing and conversion
+checks on V100 and Blackwell hardware; the measurements below predate them.
 
 Verified on a Tesla V100-SXM3-32GB (driver 580.178.04):
 

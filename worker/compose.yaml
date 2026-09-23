@@ -19,6 +19,10 @@ services:
   seed:
     build:
       context: ./seed
+      args:
+        PYTORCH_BASE_IMAGE: ${PYTORCH_BASE_IMAGE:-pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime@sha256:68c022c2f4627943a6f3e574cfd2c8ae4256210d5f66ae2b117942e0a8d4fa9d}
+        TORCH_VERSION: ${TORCH_VERSION:-2.4.0}
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}
     restart: unless-stopped
     gpus: all
     env_file:
@@ -34,6 +38,10 @@ services:
   realtime:
     build:
       context: ./realtime
+      args:
+        PYTORCH_BASE_IMAGE: ${PYTORCH_BASE_IMAGE:-pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime@sha256:68c022c2f4627943a6f3e574cfd2c8ae4256210d5f66ae2b117942e0a8d4fa9d}
+        TORCH_VERSION: ${TORCH_VERSION:-2.4.0}
+        TORCH_INDEX_URL: ${TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu121}
     restart: unless-stopped
     # Host networking is required: aiortc gathers its own UDP ports for media,
     # which cannot be published from a bridge network. Signalling still binds to
@@ -49,6 +57,10 @@ services:
   rvc:
     build:
       context: ./rvc
+      args:
+        TORCH_VERSION: ${RVC_TORCH_VERSION:-2.7.1}
+        TORCH_INDEX_URL: ${RVC_TORCH_INDEX_URL:-https://download.pytorch.org/whl/cu118}
+        RVC_CUDA_VARIANT: ${RVC_CUDA_VARIANT:-cu118}
     restart: unless-stopped
     gpus: all
     # RVC's trainer runs four dataloader workers with a prefetch of eight and

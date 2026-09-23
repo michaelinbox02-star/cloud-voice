@@ -3,7 +3,10 @@
 # Pinned to the final commit of the canonical upstream (Plachtaa/seed-vc,
 # archived 2025-11-21). The realtime fork used for streaming forked from this
 # same revision, so offline and realtime share one upstream lineage.
-FROM pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime@sha256:68c022c2f4627943a6f3e574cfd2c8ae4256210d5f66ae2b117942e0a8d4fa9d
+ARG PYTORCH_BASE_IMAGE=pytorch/pytorch:2.4.0-cuda12.1-cudnn9-runtime@sha256:68c022c2f4627943a6f3e574cfd2c8ae4256210d5f66ae2b117942e0a8d4fa9d
+FROM ${PYTORCH_BASE_IMAGE}
+ARG TORCH_VERSION=2.4.0
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cu121
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
@@ -17,6 +20,7 @@ RUN apt-get update \
 
 COPY requirements.txt /tmp/requirements.txt
 RUN python -m pip install --no-cache-dir -r /tmp/requirements.txt
+RUN python -c "import torch; assert torch.__version__.split('+')[0] == '${TORCH_VERSION}'; assert '${TORCH_INDEX_URL}'.startswith('https://download.pytorch.org/whl/')"
 
 RUN git clone https://github.com/Plachtaa/seed-vc.git /opt/seed-vc \
     && cd /opt/seed-vc \

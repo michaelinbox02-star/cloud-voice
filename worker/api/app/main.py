@@ -7,6 +7,7 @@ delegated to isolated engine services over the internal Docker network.
 from __future__ import annotations
 
 import json
+import time
 import shutil
 import subprocess
 import tarfile
@@ -120,11 +121,25 @@ def system() -> dict:
     statuses: dict[str, dict] = {}
     for name, probe in (("seed-vc", engines.seed_health), ("rvc", engines.rvc_health), ("tts", engines.tts_health)):
         try:
-            statuses[name] = probe()
+            status = probe()
+            if status.get("status") not in {"ready", "warming", "unavailable"}:
+                status["status"] = "unavailable"
+            statuses[name] = status
         except engines.EngineError as error:
             statuses[name] = {"status": "unavailable", "detail": str(error)}
+    realtime_status = config.DATA_ROOT / "realtime-health.json"
+    try:
+        reported = json.loads(realtime_status.read_text())
+        if time.time() - float(reported["updated_at"]) > 10:
+            raise ValueError("Realtime status is stale")
+        statuses["realtime"] = reported
+    except (OSError, ValueError, KeyError, json.JSONDecodeError):
+        statuses["realtime"] = {"status": "unavailable", "detail": "Realtime engine is not reporting"}
     return {
         "gpus": gpu_info(),
+        "compute_capability": config.COMPUTE_CAPABILITY,
+        "cuda_variant": config.CUDA_VARIANT,
+        "driver_version": config.DRIVER_VERSION,
         "disk": disk_info(),
         "engines": statuses,
         "voices": len(db.list_voices()),
@@ -135,6 +150,22 @@ def system() -> dict:
 def warmup_seed() -> dict:
     try:
         return engines.seed_warmup()
+    except engines.EngineError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/v1/engines/rvc/warmup", dependencies=[Depends(require_token)])
+def warmup_rvc() -> dict:
+    try:
+        return engines.rvc_warmup()
+    except engines.EngineError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/v1/engines/tts/warmup", dependencies=[Depends(require_token)])
+def warmup_tts() -> dict:
+    try:
+        return engines.tts_warmup()
     except engines.EngineError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
@@ -279,7 +310,7 @@ def create_conversion(
         raise HTTPException(status_code=400, detail="output_format must be wav, mp3, or flac.")
     parsed["output_format"] = output_format
 
-    job = db.create_job(kind="convert", engine=voice["engine"], voice_id=voice_id, params=parsed)
+    job = db.create_job(kind="convert", engine=voice["engine"], lane="gpu", voice_id=voice_id, params=parsed)
     suffix = Path(source.filename or "source.wav").suffix.lower()
     destination = config.UPLOADS_DIR / job["id"] / f"source{suffix}"
     save_upload(source, destination)
@@ -348,6 +379,7 @@ def create_tts(request: TtsRequest) -> dict:
     job = db.create_job(
         kind="tts",
         engine="tts",
+        lane="gpu" if request.voice_id else "cpu",
         voice_id=request.voice_id,
         params={k: v for k, v in params.items() if v is not None},
     )
@@ -483,6 +515,7 @@ def create_training(
     job = db.create_job(
         kind="train",
         engine="rvc",
+        lane="gpu",
         voice_id=None,
         params={
             "experiment": experiment,
@@ -514,6 +547,10 @@ def create_training(
 @app.get("/v1/backup", dependencies=[Depends(require_token)])
 def download_backup() -> FileResponse:
     """Package every user-owned artifact so a worker can be rebuilt elsewhere."""
+    return jobs.run_in_lane("cpu", _package_backup)
+
+
+def _package_backup() -> FileResponse:
     config.BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
     for stale in config.BACKUPS_DIR.glob("cloud-voice-backup-*.tar.gz"):
         stale.unlink(missing_ok=True)
@@ -532,6 +569,10 @@ def download_backup() -> FileResponse:
 
 @app.post("/v1/restore", dependencies=[Depends(require_token)])
 def restore_backup(archive: UploadFile = File(...)) -> dict:
+    return jobs.run_in_lane("io", lambda: _restore_backup(archive))
+
+
+def _restore_backup(archive: UploadFile) -> dict:
     staged = config.BACKUPS_DIR / "restore-upload.tar.gz"
     save_upload(archive, staged, allowed=frozenset({".gz", ".tgz"}))
     stage_dir = config.BACKUPS_DIR / "restore"

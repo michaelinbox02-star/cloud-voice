@@ -1,0 +1,6 @@
+onnxruntime-gpu==1.18.1
+nvidia-cudnn-cu11==8.9.5.30
+nvidia-cublas-cu11==11.11.3.6
+nvidia-cuda-runtime-cu11==11.8.89
+nvidia-cuda-nvrtc-cu11==11.8.89
+nvidia-cufft-cu11==10.9.0.58

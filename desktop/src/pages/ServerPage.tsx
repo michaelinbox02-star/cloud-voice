@@ -79,7 +79,7 @@ export function ServerPage({ server, setServer, online, system, onConnected, onD
     }
   };
 
-  const seed = system?.engines?.["seed-vc"];
+  const engineLabels: Record<string, string> = { "seed-vc": "Seed-VC", realtime: "Realtime", rvc: "RVC", tts: "Kokoro TTS" };
 
   return (
     <div className="page">
@@ -177,17 +177,27 @@ export function ServerPage({ server, setServer, online, system, onConnected, onD
               </div>
             ))}
             <div className="stat">
+              <span className="stat-label">CUDA</span>
+              <span className="stat-value">{system.cuda_variant}</span>
+              <span className="stat-note">compute {system.compute_capability} · driver {system.driver_version}</span>
+            </div>
+            <div className="stat">
               <span className="stat-label">Disk</span>
               <span className="stat-value">{system.disk.free_gib} GiB free</span>
               <span className="stat-note">{system.disk.total_gib} GiB total</span>
             </div>
-            <div className="stat">
-              <span className="stat-label">Seed-VC</span>
-              <span className="stat-value">
-                {seed?.status === "ready" ? "Models loaded" : seed?.status === "cold" ? "Idle" : seed?.status ?? "Unknown"}
-              </span>
-              <span className="stat-note">{seed?.device ?? seed?.detail ?? "not reported"}</span>
-            </div>
+            {Object.entries(engineLabels).map(([name, label]) => {
+              const engine = system.engines[name];
+              return (
+                <div className="stat" key={name}>
+                  <span className="stat-label">{label}</span>
+                  <span className="stat-value">
+                    {engine?.status === "ready" ? "Ready" : engine?.status === "warming" ? "Warming…" : "Unavailable"}
+                  </span>
+                  <span className="stat-note">{engine?.detail ?? engine?.device ?? (engine?.status === "warming" ? "Loading models and assets" : "")}</span>
+                </div>
+              );
+            })}
             <div className="stat">
               <span className="stat-label">Voices</span>
               <span className="stat-value">{system.voices}</span>

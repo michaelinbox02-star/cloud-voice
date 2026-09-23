@@ -28,7 +28,7 @@ FastAPI service owning voices, jobs and artifacts.
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /v1/health` | Liveness plus GPU inventory |
-| `GET /v1/system` | GPU, disk, engine status, voice count |
+| `GET /v1/system` | GPU, driver, CUDA variant, disk, engine readiness, voice count |
 | `GET` / `POST /v1/voices` | List and create voice profiles |
 | `GET /v1/voices/{id}/reference` | Fetch the reference clip |
 | `DELETE /v1/voices/{id}` | Remove a voice and its files |
@@ -36,10 +36,16 @@ FastAPI service owning voices, jobs and artifacts.
 | `GET /v1/jobs` and `GET /v1/jobs/{id}` | Job status, metrics and errors |
 | `GET /v1/jobs/{id}/audio` | Download the finished artifact |
 | `POST /v1/engines/seed-vc/warmup` | Load models ahead of the first job |
+| `POST /v1/engines/rvc/warmup` | Fetch RVC inference and training assets |
+| `POST /v1/engines/tts/warmup` | Load the default Kokoro pipeline and voice |
 
-Jobs run on a single-worker executor because there is one GPU, and the engine
-serialises model access as well. A restart marks in-flight jobs failed instead
-of leaving the interface waiting forever.
+Jobs declare a resource lane in SQLite. The GPU lane has one worker for offline
+conversion and training; CPU has two workers for TTS, encoding and backup
+packaging; IO has one worker for restore. TTS routed through a stored voice uses
+the GPU lane. A file lock in `voice_data` also excludes GPU jobs while a realtime
+session is active. Realtime returns a busy error if a GPU job holds that lock.
+After GPU conversion, MP3/FLAC encoding is handed to the CPU lane. A restart
+marks in-flight jobs failed instead of leaving the interface waiting forever.
 
 ### Engines (`worker/seed/`)
 
@@ -47,7 +53,7 @@ Each model family gets its own container so incompatible dependency sets never
 meet. The Seed-VC engine is pinned to the final commit of `Plachtaa/seed-vc`
 and exposes `POST /v1/convert` plus a warmup endpoint.
 
-Containers share two volumes: `voice_data` for profiles, uploads and outputs,
+Containers share `voice_data` for profiles, uploads, outputs and readiness,
 and `seed_checkpoints` for model weights. Weights are fetched directly on the
 GPU host and persist across container recreation.
 
@@ -66,6 +72,10 @@ Session authorisation is a short-lived ticket. The control plane mints it,
 writes it into the shared data volume and returns the token to the desktop; the
 realtime engine validates that ticket, so the long-lived worker credential is
 never used for media.
+
+At startup, realtime reloads the most recently used voice when its reference
+still exists. It writes a short-lived status heartbeat to the shared volume;
+the control plane reports the engine unavailable if that heartbeat stops.
 
 ### RVC engine (`worker/rvc/`)
 
@@ -101,10 +111,13 @@ existing library.
 
 ## Provisioning
 
-`scripts/bootstrap.sh` validates Ubuntu 24.04 and the NVIDIA driver, installs
+`scripts/bootstrap.sh` validates Ubuntu 24.04, detects compute capability and
+driver support before installing Docker, selects a pinned CUDA 12.1 or 12.8
+PyTorch image, and records that choice in `.env`. It then installs
 Docker and the NVIDIA Container Toolkit when missing, verifies that a CUDA
 container can see the GPU, writes credentials to `.env` with mode 600, brings
-the stack up and waits for the control plane to answer.
+the stack up and waits for the control plane to answer. Engines warm their
+models or assets on startup and report `warming`, `ready` or `unavailable`.
 
 ## Performance
 

@@ -10,6 +10,7 @@ import hmac
 import os
 import threading
 import time
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import numpy as np
@@ -21,10 +22,17 @@ DATA_ROOT = Path(os.environ.get("CLOUD_VOICE_DATA_ROOT", "/data")).resolve()
 ENGINE_TOKEN = os.environ.get("CLOUD_VOICE_ENGINE_TOKEN", "")
 MAX_CHARACTERS = 5000
 
-app = FastAPI(title="Cloud Voice Studio TTS Engine", version="0.1.0", docs_url=None, redoc_url=None)
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    threading.Thread(target=_warm_background, name="tts-warmup", daemon=True).start()
+    yield
 
-_pipeline = None
+
+app = FastAPI(title="Cloud Voice Studio TTS Engine", version="0.1.0", docs_url=None, redoc_url=None, lifespan=lifespan)
+
+_pipelines: dict[str, object] = {}
 _lock = threading.Lock()
+_state: dict[str, str | None] = {"status": "warming", "detail": None}
 
 
 def require_token(authorization: str | None = Header(default=None)) -> None:
@@ -35,12 +43,35 @@ def require_token(authorization: str | None = Header(default=None)) -> None:
 
 def pipeline(lang_code: str):
     """Load the Kokoro pipeline for a language once per process."""
-    global _pipeline
-    if _pipeline is None:
+    if lang_code not in _pipelines:
         from kokoro import KPipeline
 
-        _pipeline = KPipeline(lang_code=lang_code)
-    return _pipeline
+        _pipelines[lang_code] = KPipeline(lang_code=lang_code)
+    return _pipelines[lang_code]
+
+
+def warmup_pipeline() -> None:
+    with _lock:
+        if _state["status"] == "ready":
+            return
+        _state["status"] = "warming"
+        try:
+            # The default voice can be fetched lazily, so exercise it once too.
+            for _ in pipeline("a")("Ready.", voice="af_heart"):
+                pass
+        except Exception as error:
+            _state["status"] = "unavailable"
+            _state["detail"] = str(error)[:500]
+            raise
+        _state["status"] = "ready"
+        _state["detail"] = None
+
+
+def _warm_background() -> None:
+    try:
+        warmup_pipeline()
+    except Exception as error:  # noqa: BLE001 - health reports the failure
+        print(f"[tts] warmup failed: {error}", flush=True)
 
 
 class SpeechRequest(BaseModel):
@@ -54,10 +85,17 @@ class SpeechRequest(BaseModel):
 @app.get("/health", dependencies=[Depends(require_token)])
 def health() -> dict:
     return {
-        "status": "ready",
-        "loaded": _pipeline is not None,
+        "status": _state["status"],
+        "detail": _state["detail"],
+        "loaded": bool(_pipelines),
         "capabilities": ["kokoro-tts"],
     }
+
+
+@app.post("/v1/warmup", dependencies=[Depends(require_token)])
+def warmup() -> dict:
+    warmup_pipeline()
+    return health()
 
 
 @app.post("/v1/speech", dependencies=[Depends(require_token)])

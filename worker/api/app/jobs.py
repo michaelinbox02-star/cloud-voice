@@ -1,20 +1,38 @@
-"""Background job execution.
-
-One GPU, one heavy job at a time: the executor is deliberately single-worker and
-each engine serialises its own model access as well.
-"""
+"""Background jobs scheduled by resource, with a shared GPU lease for realtime."""
 
 from __future__ import annotations
 
 import json
+import fcntl
 import shutil
 import subprocess
-from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager, nullcontext
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 
 from . import config, db, engines
 
-_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="cloud-voice-job")
+_executors = {
+    "gpu": ThreadPoolExecutor(max_workers=1, thread_name_prefix="cloud-voice-gpu"),
+    "cpu": ThreadPoolExecutor(max_workers=2, thread_name_prefix="cloud-voice-cpu"),
+    "io": ThreadPoolExecutor(max_workers=1, thread_name_prefix="cloud-voice-io"),
+}
+
+
+@contextmanager
+def gpu_lease():
+    """Coordinate GPU jobs with the realtime container through the data volume."""
+    with (config.DATA_ROOT / "gpu.lock").open("a+b") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+
+
+def run_in_lane(lane: str, work):
+    """Run synchronous backup or restore work in its resource lane."""
+    return _executors[lane].submit(work).result()
 
 
 def _update(job_id: str, **fields: object) -> None:
@@ -91,24 +109,37 @@ def run_job(job_id: str) -> None:
     if job is None:
         return
 
-    _update(job_id, status="running", started_at=db.now(), progress=0.05)
     try:
         params = job["params"]
         kind = job["kind"]
         work = Path(config.OUTPUTS_DIR) / job_id
         work.mkdir(parents=True, exist_ok=True)
 
-        if kind == "tts":
-            metrics = _run_tts(job, params, work)
-        elif kind == "train":
-            metrics = _run_training(job, params)
-        else:
-            metrics = _run_conversion(job, params, work)
+        with gpu_lease() if job["lane"] == "gpu" else nullcontext():
+            _update(job_id, status="running", started_at=db.now(), progress=0.05)
+            if kind == "tts":
+                metrics = _run_tts(job, params, work)
+            elif kind == "train":
+                metrics = _run_training(job, params)
+            else:
+                metrics = _run_conversion(job, params, work)
 
         _update(job_id, progress=0.9)
+        # Encoding is CPU work. Hand it off so the GPU lane can start its next
+        # model request while MP3/FLAC is being written.
+        if job["lane"] == "gpu" and params.get("output_format", "wav") != "wav" and kind != "train":
+            future = _executors["cpu"].submit(_finish_job, job_id, metrics, params)
+            future.add_done_callback(lambda completed: _report_failure(job_id, completed))
+        else:
+            _finish_job(job_id, metrics, params)
+    except Exception as error:  # noqa: BLE001 - surfaced to the client as job status
+        _update(job_id, status="failed", error=str(error)[:2000], finished_at=db.now())
+
+
+def _finish_job(job_id: str, metrics: dict, params: dict) -> None:
+    try:
         output = Path(metrics.pop("output_path"))
         if metrics.pop("artifact_kind", None) == "rvc-model":
-            # Training produces a model file, not audio: deliver it as-is.
             delivered = output
         else:
             delivered = transcode(output, params.get("output_format", "wav"))
@@ -118,8 +149,14 @@ def run_job(job_id: str) -> None:
             " finished_at = ?, error = NULL, metrics_json = ? WHERE id = ?",
             (str(delivered), db.now(), json.dumps(metrics), job_id),
         )
-    except Exception as error:  # noqa: BLE001 - surfaced to the client as job status
+    except Exception as error:  # noqa: BLE001 - preserve an explicit job failure
         _update(job_id, status="failed", error=str(error)[:2000], finished_at=db.now())
+
+
+def _report_failure(job_id: str, completed: Future) -> None:
+    error = completed.exception()
+    if error is not None:
+        _update(job_id, status="failed", error=f"{type(error).__name__}: {error}"[:2000], finished_at=db.now())
 
 
 def _run_conversion(job: dict, params: dict, work: Path) -> dict:
@@ -205,17 +242,14 @@ def _run_training(job: dict, params: dict) -> dict:
     }
 
 
-def submit(job_id: str) -> None:
-    future = _executor.submit(run_job, job_id)
+def submit(job_id: str) -> Future:
+    job = db.get_job(job_id)
+    if job is None:
+        raise ValueError(f"Unknown job: {job_id}")
+    future = _executors[job["lane"]].submit(run_job, job_id)
 
-    def report(completed) -> None:
-        # Without this, an exception raised before run_job's own guard would sit
-        # in the future and the job would wait forever with no explanation.
-        error = completed.exception()
-        if error is not None:
-            _update(job_id, status="failed", error=f"{type(error).__name__}: {error}"[:2000], finished_at=db.now())
-
-    future.add_done_callback(report)
+    future.add_done_callback(lambda completed: _report_failure(job_id, completed))
+    return future
 
 
 def submit_conversion(job_id: str) -> None:
