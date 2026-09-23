@@ -224,7 +224,6 @@ async def offer(request: OfferRequest) -> dict:
     )
     session = LiveSession(request.session_id, ticket)
     session.pc = pc
-    pc.addTrack(session.track)
 
     global active
     if active is not None and active.pc is not None:
@@ -245,7 +244,17 @@ async def offer(request: OfferRequest) -> dict:
             if session.task is not None:
                 session.task.cancel()
 
+    # Consume the offer first, then attach our outgoing audio to the transceiver
+    # the offer created. Adding the track before setRemoteDescription appends a
+    # second m-line that the client never asked for, and the answer is rejected.
     await pc.setRemoteDescription(RTCSessionDescription(sdp=request.sdp, type=request.type))
+    audio_transceivers = [t for t in pc.getTransceivers() if t.kind == "audio"]
+    if not audio_transceivers:
+        raise HTTPException(status_code=400, detail="The client offered no audio track")
+    for transceiver in audio_transceivers:
+        if transceiver.sender.track is None:
+            pc.addTrack(session.track)
+
     answer = await pc.createAnswer()
     await pc.setLocalDescription(answer)
 
