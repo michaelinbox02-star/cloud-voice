@@ -68,6 +68,9 @@ sudo for the provisioning account.
 
 ## Running the desktop app
 
+A plain-language walkthrough of every screen lives in
+[`docs/USER-GUIDE.md`](docs/USER-GUIDE.md).
+
 ```powershell
 cd desktop
 npm install
