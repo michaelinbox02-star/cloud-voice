@@ -63,9 +63,10 @@ class FileAudioTrack(MediaStreamTrack):
         if len(chunk) < samples:
             chunk = np.pad(chunk, (0, samples - len(chunk)))
         self.index += samples
-        frame = av.AudioFrame(format="fltp", layout="mono", samples=samples)
+        frame = av.AudioFrame(format="s16", layout="mono", samples=samples)
         frame.sample_rate = self.rate
-        frame.planes[0].update(np.ascontiguousarray(chunk, dtype=np.float32).tobytes())
+        pcm = np.clip(chunk, -1.0, 1.0)
+        frame.planes[0].update((pcm * 32767.0).astype(np.int16).tobytes())
         frame.pts = self.timestamp
         frame.time_base = fractions.Fraction(1, self.rate)
         self.timestamp += samples
@@ -145,7 +146,7 @@ async def main() -> int:
         except (asyncio.TimeoutError, MediaStreamError) as error:
             print(f"receive stopped after {len(received)} frames: {type(error).__name__}", flush=True)
             break
-        data = frame.to_ndarray()
+        data = frame.reformat(format="fltp").to_ndarray()
         data = data.mean(axis=0) if frame.layout.nb_channels > 1 else data.reshape(-1)
         received.append(data.astype(np.float32))
 

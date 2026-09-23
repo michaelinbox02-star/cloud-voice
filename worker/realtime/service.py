@@ -141,9 +141,12 @@ class ConvertedTrack(MediaStreamTrack):
             chunk = samples[start : start + OUTPUT_FRAME_SAMPLES]
             if len(chunk) < OUTPUT_FRAME_SAMPLES:
                 chunk = np.pad(chunk, (0, OUTPUT_FRAME_SAMPLES - len(chunk)))
-            frame = av.AudioFrame(format="fltp", layout="mono", samples=len(chunk))
+            # aiortc's Opus encoder asserts on s16: sending fltp frames raises
+            # inside the encoder thread and silently ends the send loop.
+            frame = av.AudioFrame(format="s16", layout="mono", samples=len(chunk))
             frame.sample_rate = OUTPUT_RATE
-            frame.planes[0].update(np.ascontiguousarray(chunk, dtype=np.float32).tobytes())
+            pcm = np.clip(chunk, -1.0, 1.0)
+            frame.planes[0].update((pcm * 32767.0).astype(np.int16).tobytes())
             frame.pts = self.timestamp
             frame.time_base = Fraction(1, OUTPUT_RATE)
             self.timestamp += len(chunk)
