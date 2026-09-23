@@ -181,7 +181,27 @@ cd \"$HOME/cloud-voice\"; git fetch --quiet origin; git checkout --detach {} >/d
 #[tauri::command]
 fn connect_worker(app: tauri::AppHandle, state: tauri::State<'_, AppState>, input: ServerInput) -> Result<Value, String> {
     validate(&input)?;
-    let token = load_token(&input.host)?;
+    // A worker provisioned outside this app (or before the credential was
+    // stored) still has to be reachable: fetch the token over the same SSH key
+    // and remember it rather than making the user reinstall.
+    let token = match load_token(&input.host) {
+        Ok(token) => token,
+        Err(_) => {
+            let fetched = ssh_run(
+                &app,
+                &input,
+                "sed -n 's/^CLOUD_VOICE_API_TOKEN=//p' \"$HOME/cloud-voice/.env\"",
+            )?;
+            if fetched.len() != 64 || !fetched.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(
+                    "No credential is stored for this host, and the worker has no API token yet. Use Install on GPU first."
+                        .into(),
+                );
+            }
+            store_token(&input.host, &fetched)?;
+            fetched
+        }
+    };
 
     // Drop any previous tunnel before opening a new one.
     if let Some(connection) = state.connection.lock().unwrap().take() {
