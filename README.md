@@ -49,13 +49,27 @@ sudo for the provisioning account.
 ```powershell
 cd desktop
 npm install
-npm run tauri dev
+npm run app:dev
 ```
 
 Then open **Server**, enter the host, port, username and private key path, test
 the connection, and install. The credential is stored in Windows Credential
 Manager, and the management port is reached through an SSH tunnel instead of
 being exposed publicly.
+
+## Building the desktop app
+
+```powershell
+cd desktop
+npm run app:build       # release binary plus NSIS installer
+npm run app:portable    # release binary only, no installer
+```
+
+The release binary lands in `desktop/src-tauri/target/release/`. The NSIS
+installer needs a normal Windows environment: this project was developed in a
+sandboxed session where `makensis` took minutes on an empty script, so the
+installer is configured and ready but was not produced there. Build it on a
+regular machine or in CI.
 
 ## Verifying a worker
 
