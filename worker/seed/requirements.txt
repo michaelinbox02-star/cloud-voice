@@ -1,0 +1,21 @@
+# Inference-only dependency set for Seed-VC V2 offline conversion.
+# Deliberately excludes gradio, descript-audio-codec, faster-whisper, langid,
+# onnxruntime and the OpenVoice modules: none are imported by the V2 path.
+fastapi==0.115.12
+uvicorn==0.34.2
+python-multipart==0.0.20
+hydra-core==1.3.2
+omegaconf==2.3.0
+transformers==4.46.3
+tokenizers==0.20.3
+huggingface-hub==0.28.1
+librosa==0.10.2
+soundfile==0.12.1
+scipy==1.13.1
+numpy==1.26.4
+einops==0.8.0
+munch==4.0.0
+pydub==0.25.1
+matplotlib==3.9.2
+ftfy==6.3.0
+tqdm==4.67.1
