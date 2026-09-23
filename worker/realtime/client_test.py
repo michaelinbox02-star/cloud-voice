@@ -42,6 +42,7 @@ def post(url: str, payload: dict, token: str | None = None) -> dict:
 
 
 class FileAudioTrack(MediaStreamTrack):
+
     """Plays a file at real time so the server sees a live microphone."""
 
     kind = "audio"
@@ -146,9 +147,17 @@ async def main() -> int:
         except (asyncio.TimeoutError, MediaStreamError) as error:
             print(f"receive stopped after {len(received)} frames: {type(error).__name__}", flush=True)
             break
-        data = frame.reformat(format="fltp").to_ndarray()
-        data = data.mean(axis=0) if frame.layout.nb_channels > 1 else data.reshape(-1)
-        received.append(data.astype(np.float32))
+        array = frame.to_ndarray()
+        channels = frame.layout.nb_channels
+        if frame.format.is_planar:
+            data = array.mean(axis=0)
+        else:
+            data = array.reshape(-1, channels).mean(axis=1)
+        if frame.format.name.startswith("s16"):
+            data = data.astype(np.float32) / 32768.0
+        else:
+            data = data.astype(np.float32)
+        received.append(data)
 
     stats = json.loads(
         urllib.request.urlopen(

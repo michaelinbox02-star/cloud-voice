@@ -40,6 +40,28 @@ MAX_QUEUED_FRAMES = 40
 app = FastAPI(title="Cloud Voice Studio Realtime", version="0.1.0", docs_url=None, redoc_url=None)
 
 
+def frame_to_mono(frame: av.AudioFrame) -> np.ndarray:
+    """Decode any PyAV audio frame into mono float32 in [-1, 1].
+
+    PyAV's AudioFrame has no `reformat`, unlike VideoFrame, so the dtype and
+    channel layout have to be handled here.
+    """
+    array = frame.to_ndarray()
+    channels = frame.layout.nb_channels
+    if frame.format.is_planar:
+        data = array.mean(axis=0)
+    else:
+        data = array.reshape(-1, channels).mean(axis=1)
+    name = frame.format.name
+    if name.startswith("s16"):
+        return data.astype(np.float32) / 32768.0
+    if name.startswith("s32"):
+        return data.astype(np.float32) / 2147483648.0
+    if name == "u8":
+        return (data.astype(np.float32) - 128.0) / 128.0
+    return data.astype(np.float32)
+
+
 def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
 
@@ -194,10 +216,13 @@ class LiveSession:
                     flush=True,
                 )
             try:
-                frame = frame.reformat(format="fltp")
-                data = frame.to_ndarray()
-                data = data.mean(axis=0) if frame.layout.nb_channels > 1 else data.reshape(-1)
-                buffer = np.concatenate((buffer, data.astype(np.float32)))
+                if inbound == 1:
+                    print(
+                        f"[realtime] inbound format={frame.format.name} rate={frame.sample_rate}"
+                        f" layout={frame.layout.name}",
+                        flush=True,
+                    )
+                buffer = np.concatenate((buffer, frame_to_mono(frame)))
             except Exception as error:  # noqa: BLE001
                 print(f"[realtime] frame decode failed: {error!r}", flush=True)
                 continue
