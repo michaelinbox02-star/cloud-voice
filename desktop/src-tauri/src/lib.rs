@@ -17,7 +17,7 @@ use worker::{Connection, Tunnel};
 
 /// Worker revision the installer pins to. Bump alongside `WORKER_RELEASE` in
 /// this file whenever a worker change is verified on real hardware.
-const WORKER_RELEASE: &str = "0a4fc171cf19112d657e57e8c75d19d0fa96e8e9";
+const WORKER_RELEASE: &str = "f0854336e50268f980ead8cefcb8af0859a523aa";
 
 const KEYRING_SERVICE: &str = "cloud-voice-studio";
 
