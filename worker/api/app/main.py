@@ -465,10 +465,18 @@ def register_trained_voice(request: WorkerVoiceRequest) -> dict:
 
 
 @app.post("/v1/training", dependencies=[Depends(require_token)], status_code=202)
-def create_training(request: TrainingRequest, dataset: UploadFile = File(...)) -> dict:
+def create_training(
+    dataset: UploadFile = File(...),
+    name: str = Form(...),
+    voice_name: str | None = Form(default=None),
+    epochs: int = Form(default=200),
+    batch_size: int = Form(default=8),
+    f0: bool = Form(default=True),
+    sample_rate_option: str = Form(default="40k"),
+) -> dict:
     if not (dataset.filename or "").lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Upload the dataset as a .zip of audio files.")
-    experiment = "".join(ch for ch in request.name if ch.isalnum() or ch in "-_")[:48]
+    experiment = "".join(ch for ch in name if ch.isalnum() or ch in "-_")[:48]
     if not experiment:
         raise HTTPException(status_code=400, detail="Training name must contain letters or digits.")
 
@@ -478,11 +486,11 @@ def create_training(request: TrainingRequest, dataset: UploadFile = File(...)) -
         voice_id=None,
         params={
             "experiment": experiment,
-            "voice_name": request.voice_name or request.name,
-            "epochs": request.epochs,
-            "batch_size": request.batch_size,
-            "f0": request.f0,
-            "sample_rate_option": request.sample_rate_option,
+            "voice_name": voice_name or name,
+            "epochs": epochs,
+            "batch_size": batch_size,
+            "f0": f0,
+            "sample_rate_option": sample_rate_option,
         },
     )
 
