@@ -27,6 +27,22 @@ services:
       - voice_data:/data
       - seed_checkpoints:/opt/seed-vc/checkpoints
 
+  realtime:
+    build:
+      context: ./realtime
+    restart: unless-stopped
+    # Host networking is required: aiortc gathers its own UDP ports for media,
+    # which cannot be published from a bridge network. Signalling still binds to
+    # 127.0.0.1 only, so it is reachable just through the desktop's SSH tunnel.
+    network_mode: host
+    gpus: all
+    env_file:
+      - ../.env
+    volumes:
+      - voice_data:/data
+      - realtime_checkpoints:/opt/seed-vc-realtime/checkpoints
+
 volumes:
   voice_data:
   seed_checkpoints:
+  realtime_checkpoints:

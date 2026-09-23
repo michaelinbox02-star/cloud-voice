@@ -26,4 +26,6 @@ COPY engine.py service.py /opt/seed-vc-realtime/
 
 WORKDIR /opt/seed-vc-realtime
 EXPOSE 8791
-CMD ["uvicorn", "service:app", "--host", "0.0.0.0", "--port", "8791"]
+# Signalling is reachable only from the host's loopback; the desktop reaches it
+# through its SSH tunnel, and media uses UDP gathered on the host interfaces.
+CMD ["uvicorn", "service:app", "--host", "127.0.0.1", "--port", "8791"]

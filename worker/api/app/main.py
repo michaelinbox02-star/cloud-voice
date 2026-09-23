@@ -15,8 +15,9 @@ from pathlib import Path
 
 from fastapi import Depends, FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 
-from . import config, db, engines, jobs
+from . import config, db, engines, jobs, realtime
 from .security import require_token
 
 ENGINES = {"seed-vc", "rvc"}
@@ -126,6 +127,38 @@ def warmup_seed() -> dict:
         return engines.seed_warmup()
     except engines.EngineError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+class RealtimeRequest(BaseModel):
+    voice_id: str
+    preset: str = "balanced"
+    diffusion_steps: int | None = None
+    inference_cfg_rate: float = 0.7
+
+
+@app.post("/v1/realtime/sessions", dependencies=[Depends(require_token)], status_code=201)
+def create_realtime_session(request: RealtimeRequest) -> dict:
+    voice = db.get_voice(request.voice_id)
+    if voice is None:
+        raise HTTPException(status_code=404, detail="Voice not found.")
+    if voice["engine"] != "seed-vc":
+        raise HTTPException(status_code=400, detail="Realtime currently supports Seed-VC voices.")
+    if not voice.get("reference_audio"):
+        raise HTTPException(status_code=409, detail="This voice has no reference audio on the worker.")
+    if request.preset not in {"low-latency", "balanced", "quality"}:
+        raise HTTPException(status_code=400, detail="preset must be low-latency, balanced or quality.")
+    return realtime.create_ticket(
+        voice=voice,
+        preset=request.preset,
+        diffusion_steps=request.diffusion_steps,
+        inference_cfg_rate=request.inference_cfg_rate,
+    )
+
+
+@app.delete("/v1/realtime/sessions/{session_id}", dependencies=[Depends(require_token)])
+def delete_realtime_session(session_id: str) -> dict:
+    realtime.delete_ticket(session_id)
+    return {"deleted": session_id}
 
 
 @app.get("/v1/voices", dependencies=[Depends(require_token)])
