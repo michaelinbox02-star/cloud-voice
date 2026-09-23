@@ -1,0 +1,20 @@
+# Streaming runtime. Torch and torchaudio come from the pinned base image.
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+python-multipart==0.0.20
+aiortc==1.11.0
+av==13.1.0
+librosa==0.10.2
+soundfile==0.12.1
+scipy==1.13.1
+numpy==1.26.4
+einops==0.8.0
+munch==4.0.0
+pydub==0.25.1
+transformers==4.46.3
+tokenizers==0.20.3
+huggingface-hub==0.28.1
+PyYAML==6.0.2
+funasr==1.2.7
+modelscope==1.18.1
+sounddevice==0.5.0
