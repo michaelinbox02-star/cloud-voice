@@ -53,6 +53,12 @@ export type JobMetrics = {
   peak_vram_mib?: number;
   sample_rate?: number;
   output_format?: string;
+  // Training and synthesis report their own extras.
+  synthesis_seconds?: number;
+  characters?: number;
+  model_path?: string | null;
+  index_path?: string | null;
+  experiment?: string;
 };
 
 export type JobStatus = "queued" | "running" | "succeeded" | "failed";
@@ -152,3 +158,53 @@ export const realtimeEnd = (sessionId: string, voiceId: string) =>
   invoke<void>("realtime_end", { sessionId, voiceId });
 
 export const realtimeHealth = () => invoke<Record<string, unknown>>("realtime_health");
+
+export type TtsDraft = {
+  text: string;
+  voice_id?: string | null;
+  tts_voice?: string;
+  lang_code?: string;
+  speed?: number;
+  output_format?: string;
+};
+
+export const startTts = (draft: TtsDraft) => invoke<Job>("start_tts", { draft });
+
+export type TrainingDraft = {
+  name: string;
+  voice_name?: string;
+  epochs?: number;
+  batch_size?: number;
+  f0?: boolean;
+  sample_rate_option?: string;
+};
+
+export const startTraining = (draft: TrainingDraft, datasetPath: string) =>
+  invoke<Job>("start_training", { draft, datasetPath });
+
+export const createRvcVoice = (draft: VoiceDraft, modelPath: string, indexPath?: string) =>
+  invoke<Voice>("create_rvc_voice", { draft, modelPath, indexPath });
+
+export const registerWorkerVoice = (draft: {
+  name: string;
+  description?: string;
+  model_path: string;
+  index_path?: string;
+}) => invoke<Voice>("register_worker_voice", { draft });
+
+export const downloadBackup = (destinationPath: string) =>
+  invoke<string>("download_backup", { destinationPath });
+
+export const restoreBackup = (archivePath: string) =>
+  invoke<{ restored_voices: number; voices: number }>("restore_backup", { archivePath });
+
+export const KOKORO_VOICES = [
+  { id: "af_heart", label: "Heart · US female" },
+  { id: "af_bella", label: "Bella · US female" },
+  { id: "af_nicole", label: "Nicole · US female" },
+  { id: "af_sarah", label: "Sarah · US female" },
+  { id: "am_adam", label: "Adam · US male" },
+  { id: "am_michael", label: "Michael · US male" },
+  { id: "bf_emma", label: "Emma · UK female" },
+  { id: "bm_george", label: "George · UK male" },
+];

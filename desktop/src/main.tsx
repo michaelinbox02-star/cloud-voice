@@ -7,6 +7,9 @@ import { VoicesPage } from "./pages/VoicesPage";
 import { VoiceToVoicePage } from "./pages/VoiceToVoicePage";
 import { RealtimePage } from "./pages/RealtimePage";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
+import { TtsPage } from "./pages/TtsPage";
+import { TrainingPage } from "./pages/TrainingPage";
+import { SettingsPage } from "./pages/SettingsPage";
 import "./style.css";
 
 type View = "realtime" | "voices" | "tts" | "voice-to-voice" | "training" | "server" | "settings";
@@ -74,15 +77,15 @@ function App() {
       group: "Studio",
       items: [
         { key: "voice-to-voice", label: "Voice to Voice" },
-        { key: "tts", label: "Text to Speech", soon: true },
+        { key: "tts", label: "Text to Speech" },
       ],
     },
     {
       group: "Worker",
       items: [
-        { key: "training", label: "Training", soon: true },
+        { key: "training", label: "Training" },
         { key: "server", label: "Server" },
-        { key: "settings", label: "Settings", soon: true },
+        { key: "settings", label: "Settings" },
       ],
     },
   ];
@@ -153,38 +156,9 @@ function App() {
         {view === "voices" && <VoicesPage online={online} onCountChange={setVoiceCount} />}
         {view === "voice-to-voice" && <VoiceToVoicePage online={online} />}
         {view === "realtime" && <RealtimePage online={online} />}
-        {view === "tts" && (
-          <PlaceholderPage
-            eyebrow="STUDIO"
-            title="Text to speech"
-            summary="Text becomes speech with Kokoro, then passes through the selected voice engine."
-            missing={["Kokoro engine container", "Job type for TTS generation", "Preview and export controls"]}
-          />
-        )}
-        {view === "training" && (
-          <PlaceholderPage
-            eyebrow="WORKER"
-            title="Training"
-            summary="Remote RVC v2 training with dataset preprocessing on the GPU worker."
-            missing={[
-              "RVC inference engine container",
-              "Dataset upload, slicing and preprocessing pipeline",
-              "Training job orchestration with checkpoint export",
-            ]}
-          />
-        )}
-        {view === "settings" && (
-          <PlaceholderPage
-            eyebrow="WORKER"
-            title="Settings"
-            summary="Audio devices, latency presets and backup management."
-            missing={[
-              "Input and output device selection with virtual cable detection",
-              "Latency presets derived from measured worker benchmarks",
-              "Voice library backup and restore",
-            ]}
-          />
-        )}
+        {view === "tts" && <TtsPage online={online} />}
+        {view === "training" && <TrainingPage online={online} onVoicesChanged={refresh} />}
+        {view === "settings" && <SettingsPage online={online} system={system} onRestored={refresh} />}
       </main>
     </div>
   );

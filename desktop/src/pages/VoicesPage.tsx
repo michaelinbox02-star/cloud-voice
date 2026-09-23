@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Voice } from "../api";
-import { createVoice, deleteVoice, listVoices, workerFetchArtifact } from "../api";
+import { createRvcVoice, createVoice, deleteVoice, listVoices, workerFetchArtifact } from "../api";
 import { engineLabel, formatBytes, formatTimestamp } from "../format";
 
 type Props = { online: boolean; onCountChange: (count: number) => void };
@@ -12,7 +12,14 @@ export function VoicesPage({ online, onCountChange }: Props) {
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
   const [playing, setPlaying] = useState<{ id: string; path: string } | null>(null);
-  const [draft, setDraft] = useState({ name: "", engine: "seed-vc", description: "", referencePath: "" });
+  const [draft, setDraft] = useState({
+    name: "",
+    engine: "seed-vc",
+    description: "",
+    referencePath: "",
+    modelPath: "",
+    indexPath: "",
+  });
 
   const reload = async () => {
     try {
@@ -40,17 +47,43 @@ export function VoicesPage({ online, onCountChange }: Props) {
     }
   };
 
+  const chooseModel = async () => {
+    const selection = await open({ multiple: false, filters: [{ name: "RVC model", extensions: ["pth"] }] });
+    if (typeof selection === "string") {
+      setDraft((current) => ({ ...current, modelPath: selection }));
+    }
+  };
+
+  const chooseIndex = async () => {
+    const selection = await open({ multiple: false, filters: [{ name: "RVC index", extensions: ["index"] }] });
+    if (typeof selection === "string") {
+      setDraft((current) => ({ ...current, indexPath: selection }));
+    }
+  };
+
   const submit = async () => {
     setBusy(true);
     setError("");
     try {
-      await createVoice({
-        name: draft.name,
-        engine: draft.engine,
-        description: draft.description || undefined,
-        referencePath: draft.referencePath || undefined,
-      });
-      setDraft({ name: "", engine: draft.engine, description: "", referencePath: "" });
+      if (draft.engine === "rvc") {
+        await createRvcVoice(
+          {
+            name: draft.name,
+            engine: "rvc",
+            description: draft.description || undefined,
+          },
+          draft.modelPath,
+          draft.indexPath || undefined,
+        );
+      } else {
+        await createVoice({
+          name: draft.name,
+          engine: draft.engine,
+          description: draft.description || undefined,
+          referencePath: draft.referencePath || undefined,
+        });
+      }
+      setDraft({ name: "", engine: draft.engine, description: "", referencePath: "", modelPath: "", indexPath: "" });
       await reload();
     } catch (problem) {
       setError(String(problem));
@@ -104,15 +137,20 @@ export function VoicesPage({ online, onCountChange }: Props) {
       <div className="eyebrow">VOICE LIBRARY</div>
       <h1>Voices</h1>
       <p className="lede">
-        A Seed-VC voice is a reference recording, so a new voice takes seconds and needs no training.
+        A Seed-VC voice is a reference recording, so it takes seconds and needs no training. An RVC voice is a
+        trained <code>.pth</code> model with an optional retrieval index.
       </p>
 
       <section className="panel">
         <div className="panel-head">
           <span className="step">+</span>
           <div>
-            <h2>New Seed-VC voice</h2>
-            <p>Use 5–30 seconds of clean speech with no music or background noise.</p>
+            <h2>{draft.engine === "rvc" ? "Import RVC voice" : "New Seed-VC voice"}</h2>
+            <p>
+              {draft.engine === "rvc"
+                ? "Bring a model trained here or elsewhere. Large files stay on the worker."
+                : "Use 5–30 seconds of clean speech with no music or background noise."}
+            </p>
           </div>
         </div>
         <div className="grid two">
@@ -124,6 +162,7 @@ export function VoicesPage({ online, onCountChange }: Props) {
             Engine
             <select value={draft.engine} onChange={(event) => setDraft({ ...draft, engine: event.target.value })}>
               <option value="seed-vc">Seed-VC (zero-shot)</option>
+              <option value="rvc">RVC v2 (trained model)</option>
             </select>
           </label>
         </div>
@@ -131,15 +170,38 @@ export function VoicesPage({ online, onCountChange }: Props) {
           Description
           <input value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} placeholder="Optional note" />
         </label>
-        <label>
-          Reference recording
-          <div className="file-row">
-            <input value={draft.referencePath} readOnly placeholder="No file selected" />
-            <button className="secondary" onClick={chooseReference}>Choose file…</button>
-          </div>
-        </label>
+        {draft.engine === "rvc" ? (
+          <>
+            <label>
+              Model (.pth)
+              <div className="file-row">
+                <input value={draft.modelPath} readOnly placeholder="No model selected" />
+                <button className="secondary" onClick={chooseModel}>Choose…</button>
+              </div>
+            </label>
+            <label>
+              Index (.index, optional)
+              <div className="file-row">
+                <input value={draft.indexPath} readOnly placeholder="No index selected" />
+                <button className="secondary" onClick={chooseIndex}>Choose…</button>
+              </div>
+            </label>
+          </>
+        ) : (
+          <label>
+            Reference recording
+            <div className="file-row">
+              <input value={draft.referencePath} readOnly placeholder="No file selected" />
+              <button className="secondary" onClick={chooseReference}>Choose file…</button>
+            </div>
+          </label>
+        )}
         <div className="actions">
-          <button className="primary" disabled={busy || !draft.name || !draft.referencePath} onClick={submit}>
+          <button
+            className="primary"
+            disabled={busy || !draft.name || (draft.engine === "rvc" ? !draft.modelPath : !draft.referencePath)}
+            onClick={submit}
+          >
             {busy ? "Saving…" : "Create voice"}
           </button>
         </div>

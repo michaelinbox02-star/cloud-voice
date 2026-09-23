@@ -481,6 +481,15 @@ fn start_tts(state: tauri::State<'_, AppState>, draft: Value) -> Result<Value, S
     })
 }
 
+/// Register a model that already sits on the worker, such as one it just
+/// trained, so the file is not uploaded back over the network.
+#[tauri::command]
+fn register_worker_voice(state: tauri::State<'_, AppState>, draft: Value) -> Result<Value, String> {
+    with_connection(&state, |connection| {
+        connection.request("POST", "/v1/rvc/voices/from-worker", Some(draft), Some(600))
+    })
+}
+
 #[tauri::command]
 fn start_training(
     state: tauri::State<'_, AppState>,
@@ -636,6 +645,7 @@ pub fn run() {
             realtime_end,
             realtime_health,
             start_tts,
+            register_worker_voice,
             start_training,
             create_rvc_voice,
             download_backup,

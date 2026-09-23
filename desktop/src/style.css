@@ -495,3 +495,26 @@ input[type="range"]:focus { box-shadow: none; }
 .preset:hover:not(:disabled) { border-color: #4a555c; }
 .preset.selected { border-color: var(--accent); background: var(--accent-soft); }
 .preset:disabled { opacity: 0.5; cursor: not-allowed; }
+
+textarea.script {
+  width: 100%;
+  padding: 11px 12px;
+  border: 1px solid #39434a;
+  border-radius: 5px;
+  background: var(--panel-2);
+  color: var(--text);
+  font: 12.5px/1.6 Inter, "Segoe UI", Arial, sans-serif;
+  resize: vertical;
+  outline: none;
+}
+
+textarea.script:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+textarea.script::placeholder { color: #5d676e; }
+
+code {
+  font-family: "Cascadia Mono", Consolas, monospace;
+  font-size: 11.5px;
+  background: #222a2f;
+  border-radius: 3px;
+  padding: 1px 4px;
+}
