@@ -51,6 +51,10 @@ services:
       context: ./rvc
     restart: unless-stopped
     gpus: all
+    # RVC's trainer runs four dataloader workers with a prefetch of eight and
+    # explicitly warns that they need shared memory. Docker's 64 MB default is
+    # not enough and the workers die mid-epoch.
+    shm_size: "8gb"
     env_file:
       - ../.env
     volumes:
