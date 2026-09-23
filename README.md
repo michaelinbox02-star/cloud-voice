@@ -14,18 +14,30 @@ interface. Every model runs on the rented GPU.
   of every voice and job.
 - **Seed-VC engine** — zero-shot voice conversion from a short reference clip,
   running in its own CUDA container pinned to the final upstream commit.
+- **Realtime voice** — live Seed-VC streaming over WebRTC from the desktop
+  microphone to the GPU and back into a virtual audio cable, with device
+  selection, headphone monitoring and measured per-block telemetry.
 - **Provisioning** — `scripts/bootstrap.sh` turns a clean Ubuntu 24.04 server
   with an NVIDIA driver into a working worker, generating credentials and
   validating GPU containers along the way.
 
-Verified on a Tesla V100-SXM3-32GB (driver 580.178.04): a 12.5-second clip
-converted in 11.0 seconds at 10 diffusion steps, 3.1 GB peak VRAM.
+Verified on a Tesla V100-SXM3-32GB (driver 580.178.04):
+
+| Measurement | Result |
+| --- | --- |
+| Offline conversion, 12.5 s clip at 10 steps | 11.0 s, 3.1 GB peak VRAM |
+| Realtime per-block inference (balanced) | 134 ms mean, 138 ms p95, 240 ms budget |
+| Realtime WebRTC round trip | 47 blocks, zero dropped frames |
 
 ## Not built yet
 
-Realtime streaming over WebRTC, virtual microphone routing, RVC v2 inference
-and training, Kokoro text to speech, and library backup or restore. Those
-screens exist in the interface and say so rather than presenting dead controls.
+RVC v2 inference and training, Kokoro text to speech, and library backup or
+restore. Those screens exist in the interface and say so rather than presenting
+dead controls.
+
+Realtime streaming needs a virtual audio cable on the desktop: the converted
+audio is played into it and the call app selects its other end as the
+microphone. VB-CABLE and Voicemeeter both work, and the app detects either.
 
 ## Layout
 
@@ -77,6 +89,8 @@ regular machine or in CI.
 bash scripts/bootstrap.sh                 # provision on the GPU host
 bash scripts/seed-smoke.sh <ssh-target>   # one real conversion, end to end
 bash scripts/api-smoke.sh <ssh-target>    # full API round trip
+bash scripts/realtime-smoke.sh <ssh-target>      # streaming pipeline, block by block
+bash scripts/realtime-rtc-smoke.sh <ssh-target>  # WebRTC streaming end to end
 ```
 
 ## Repository rules

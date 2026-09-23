@@ -51,6 +51,22 @@ Containers share two volumes: `voice_data` for profiles, uploads and outputs,
 and `seed_checkpoints` for model weights. Weights are fetched directly on the
 GPU host and persist across container recreation.
 
+### Realtime engine (`worker/realtime/`)
+
+The Seed-VC realtime fork drives its pipeline from a PortAudio callback. Here
+the transport is WebRTC instead: `engine.py` feeds the same `_process_block`
+pipeline from network audio, one block in and one block out.
+
+This container runs with host networking because aiortc gathers its own UDP
+ports for media, which cannot be published from a bridge network. Signalling
+still binds to `127.0.0.1` and is reached through the desktop's SSH tunnel,
+while media flows over UDP to the host's public address.
+
+Session authorisation is a short-lived ticket. The control plane mints it,
+writes it into the shared data volume and returns the token to the desktop; the
+realtime engine validates that ticket, so the long-lived worker credential is
+never used for media.
+
 ## Provisioning
 
 `scripts/bootstrap.sh` validates Ubuntu 24.04 and the NVIDIA driver, installs
