@@ -183,6 +183,9 @@ class LiveSession:
 
         while True:
             frame = await incoming.recv()
+            if self.blocks == 0 and not hasattr(self, "_first_frame_logged"):
+                self._first_frame_logged = True
+                print("[realtime] first inbound frame received", flush=True)
             frame = frame.reformat(format="fltp")
             data = frame.to_ndarray()
             data = data.mean(axis=0) if frame.layout.nb_channels > 1 else data.reshape(-1)

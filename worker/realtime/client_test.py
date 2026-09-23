@@ -57,6 +57,7 @@ class FileAudioTrack(MediaStreamTrack):
     async def recv(self) -> av.AudioFrame:
         if not self.started:
             self.started = True
+            print("client: sender started", flush=True)
         samples = 960
         chunk = self.samples[self.index : self.index + samples]
         if len(chunk) < samples:
@@ -68,6 +69,8 @@ class FileAudioTrack(MediaStreamTrack):
         frame.pts = self.timestamp
         frame.time_base = fractions.Fraction(1, self.rate)
         self.timestamp += samples
+        if (self.timestamp // samples) % 100 == 0:
+            print(f"client: sent {self.timestamp // samples} frames", flush=True)
         await asyncio.sleep(samples / self.rate)
         return frame
 
