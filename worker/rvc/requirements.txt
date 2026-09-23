@@ -1,0 +1,31 @@
+# Inference and training only: no gradio, no WebUI, so the pydantic v1 pin that
+# the old WebUI needs does not conflict with the FastAPI service.
+numpy==1.26.4
+scipy==1.13.1
+librosa==0.10.2
+soundfile==0.12.1
+faiss-cpu==1.8.0
+praat-parselmouth==0.4.6
+einops==0.8.0
+transformers==4.49.0
+torchfcpe==0.0.4
+onnxruntime-gpu==1.18.1
+nvidia-cudnn-cu11==8.9.5.29
+nvidia-cublas-cu11==11.11.3.6
+nvidia-cuda-runtime-cu11==11.8.89
+nvidia-cuda-nvrtc-cu11==11.8.89
+nvidia-cufft-cu11==10.9.0.58
+opencv-python-headless==4.10.0.84
+scikit-learn==1.6.1
+matplotlib==3.9.2
+av==13.1.0
+ffmpeg-python==0.2.0
+local-attention==1.11.1
+tensorboard==2.19.0
+tqdm==4.67.1
+PyYAML==6.0.2
+huggingface-hub==0.28.1
+sounddevice==0.5.0
+fastapi==0.115.12
+uvicorn[standard]==0.34.2
+python-multipart==0.0.20
