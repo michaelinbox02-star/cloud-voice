@@ -75,10 +75,16 @@ def disk_info() -> dict[str, int]:
     }
 
 
-def save_upload(upload: UploadFile, destination: Path) -> int:
+def save_upload(
+    upload: UploadFile,
+    destination: Path,
+    allowed: frozenset[str] | None = None,
+) -> int:
+    """Stream an upload to disk, rejecting unexpected types and oversize files."""
     suffix = Path(upload.filename or "").suffix.lower()
-    if suffix not in config.AUDIO_SUFFIXES:
-        raise HTTPException(status_code=400, detail=f"Unsupported audio type: {suffix or 'unknown'}")
+    permitted = allowed if allowed is not None else config.AUDIO_SUFFIXES
+    if suffix not in permitted:
+        raise HTTPException(status_code=400, detail=f"Unsupported file type: {suffix or 'unknown'}")
     destination.parent.mkdir(parents=True, exist_ok=True)
     written = 0
     with destination.open("wb") as handle:
@@ -435,7 +441,7 @@ def create_training(request: TrainingRequest, dataset: UploadFile = File(...)) -
     )
 
     archive = config.DATASETS_DIR / job["id"] / "dataset.zip"
-    save_upload(dataset, archive)
+    save_upload(dataset, archive, allowed=frozenset({".zip"}))
     target = config.DATASETS_DIR / job["id"] / "dataset"
     try:
         with zipfile.ZipFile(archive) as bundle:
@@ -472,7 +478,7 @@ def download_backup() -> FileResponse:
 @app.post("/v1/restore", dependencies=[Depends(require_token)])
 def restore_backup(archive: UploadFile = File(...)) -> dict:
     staged = config.BACKUPS_DIR / "restore-upload.tar.gz"
-    save_upload(archive, staged)
+    save_upload(archive, staged, allowed=frozenset({".gz", ".tgz"}))
     stage_dir = config.BACKUPS_DIR / "restore"
     shutil.rmtree(stage_dir, ignore_errors=True)
     stage_dir.mkdir(parents=True, exist_ok=True)
