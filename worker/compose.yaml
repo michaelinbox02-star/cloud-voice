@@ -1,0 +1,20 @@
+services:
+  api:
+    build:
+      context: ./api
+    restart: unless-stopped
+    gpus: all
+    env_file:
+      - ../.env
+    ports:
+      - "127.0.0.1:8765:8765"
+    volumes:
+      - voice_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-m", "app.healthcheck"]
+      interval: 15s
+      timeout: 5s
+      retries: 4
+
+volumes:
+  voice_data:
