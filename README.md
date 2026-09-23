@@ -17,6 +17,13 @@ interface. Every model runs on the rented GPU.
 - **Realtime voice** — live Seed-VC streaming over WebRTC from the desktop
   microphone to the GPU and back into a virtual audio cable, with device
   selection, headphone monitoring and measured per-block telemetry.
+- **RVC v2** — import a `.pth` and `.index`, or train one on the worker: slicing,
+  pitch tracking, feature extraction, fine-tuning and the retrieval index all run
+  on the GPU.
+- **Text to speech** — Kokoro reads the script and can pass the result through
+  any stored voice, exported as WAV, FLAC or MP3.
+- **Backup and restore** — the whole voice library, including RVC models, moves
+  between workers in one archive.
 - **Provisioning** — `scripts/bootstrap.sh` turns a clean Ubuntu 24.04 server
   with an NVIDIA driver into a working worker, generating credentials and
   validating GPU containers along the way.
@@ -28,12 +35,15 @@ Verified on a Tesla V100-SXM3-32GB (driver 580.178.04):
 | Offline conversion, 12.5 s clip at 10 steps | 11.0 s, 3.1 GB peak VRAM |
 | Realtime per-block inference (balanced) | 134 ms mean, 138 ms p95, 240 ms budget |
 | Realtime WebRTC round trip | 47 blocks, zero dropped frames |
+| RVC v2 training, 27 slices | preprocess through index in about 5 minutes |
+| RVC v2 inference, 12.5 s clip | 13.5 s at 40 kHz |
+| Kokoro TTS, 60 characters | 4.0 s of speech in 8.1 s warm |
+| Backup round trip | 4.0 MB archive, 2 voices restored |
 
 ## Not built yet
 
-RVC v2 inference and training, Kokoro text to speech, and library backup or
-restore. Those screens exist in the interface and say so rather than presenting
-dead controls.
+RVC realtime streaming (offline RVC works), a packaged installer, and tuning of
+the training defaults.
 
 Realtime streaming needs a virtual audio cable on the desktop: the converted
 audio is played into it and the call app selects its other end as the

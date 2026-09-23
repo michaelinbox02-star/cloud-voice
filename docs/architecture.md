@@ -67,6 +67,38 @@ writes it into the shared data volume and returns the token to the desktop; the
 realtime engine validates that ticket, so the long-lived worker credential is
 never used for media.
 
+### RVC engine (`worker/rvc/`)
+
+Inference and training both run through the project's own CLIs so behaviour
+matches upstream. Training is five sequenced stages driven by the control plane:
+preprocess, F0 extraction, HuBERT feature extraction, `train.py`, then the
+retrieval index.
+
+Two details are not documented upstream and had to be reproduced from the
+WebUI's code path:
+
+- `config.json` is copied from the shipped templates (`configs/v1/40k.json` for
+  40k, `configs/v2/*.json` otherwise), not from the pretrained checkpoint.
+- `filelist.txt` is written in memory by the WebUI and never by a CLI run, so the
+  engine builds it: ground-truth wav, feature `.npy`, the two pitch tracks, the
+  speaker id, plus two silence rows.
+
+The container needs `shm_size: 8gb`; Docker's 64 MB default kills the trainer's
+dataloader workers mid-epoch.
+
+### TTS engine (`worker/tts/`)
+
+Kokoro on CPU, deliberately, so synthesis never competes with conversion for GPU
+memory. The control plane optionally routes the synthesised audio through a
+Seed-VC or RVC voice afterwards.
+
+### Backup format
+
+A gzipped tar of `voice_data`: the SQLite database plus the entire `voices/`
+tree, which holds Seed-VC reference clips and RVC `.pth`/`.index` files. Restore
+extracts to a staging directory, rejects unsafe paths, and merges over the
+existing library.
+
 ## Provisioning
 
 `scripts/bootstrap.sh` validates Ubuntu 24.04 and the NVIDIA driver, installs
