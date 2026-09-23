@@ -194,7 +194,10 @@ def warmup() -> dict:
 
 @app.post("/v1/assets/prepare", dependencies=[Depends(require_token)])
 def prepare_assets(training: bool = False) -> dict:
-    return asset_tools.prepare(training=training)
+    if training:
+        return warmup_assets()
+    with _warm_lock:
+        return asset_tools.prepare(training=False)
 
 
 @app.post("/v1/convert", dependencies=[Depends(require_token)])
@@ -205,6 +208,7 @@ def convert(request: ConvertRequest) -> dict:
     source = inside_data(request.input_path, must_exist=True, suffix_ok=True)
     output = inside_data(request.output_path, must_exist=False)
     output.parent.mkdir(parents=True, exist_ok=True)
+    warmup_assets()
 
     command = [
         "python",
@@ -269,7 +273,7 @@ def train(request: TrainRequest) -> dict:
     if not experiment:
         raise HTTPException(status_code=400, detail="Experiment name must contain letters or digits")
 
-    asset_tools.prepare(training=True)
+    warmup_assets()
 
     log_dir = Path("/opt/rvc/logs") / experiment
     if log_dir.exists():
