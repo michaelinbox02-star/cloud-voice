@@ -15,9 +15,8 @@ use std::sync::Mutex;
 use tauri::Manager;
 use worker::{Connection, Tunnel};
 
-/// Worker revision the installer pins to. Bump alongside `WORKER_RELEASE` in
-/// this file whenever a worker change is verified on real hardware.
-const WORKER_RELEASE: &str = "8cc456a44987515adcdb381a7bca30b8fefe96d3";
+/// Worker revision the installer checks out. Bump after every worker change.
+const WORKER_RELEASE: &str = "1175c1ddcd8bb460f6369febed7f7cbe4ad6717d";
 
 const KEYRING_SERVICE: &str = "cloud-voice-studio";
 
