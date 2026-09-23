@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tarfile
+import zipfile
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
@@ -109,14 +111,16 @@ def health() -> dict:
 
 @app.get("/v1/system", dependencies=[Depends(require_token)])
 def system() -> dict:
-    try:
-        seed = engines.seed_health()
-    except engines.EngineError as error:
-        seed = {"status": "unavailable", "detail": str(error)}
+    statuses: dict[str, dict] = {}
+    for name, probe in (("seed-vc", engines.seed_health), ("rvc", engines.rvc_health), ("tts", engines.tts_health)):
+        try:
+            statuses[name] = probe()
+        except engines.EngineError as error:
+            statuses[name] = {"status": "unavailable", "detail": str(error)}
     return {
         "gpus": gpu_info(),
         "disk": disk_info(),
-        "engines": {"seed-vc": seed},
+        "engines": statuses,
         "voices": len(db.list_voices()),
     }
 
@@ -314,3 +318,192 @@ def delete_job(job_id: str) -> dict:
     jobs.remove_job_files(job)
     db.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
     return {"deleted": job_id}
+
+
+class TtsRequest(BaseModel):
+    text: str
+    voice_id: str | None = None
+    tts_voice: str = "af_heart"
+    lang_code: str = "a"
+    speed: float = 1.0
+    output_format: str = "wav"
+    diffusion_steps: int | None = None
+
+
+@app.post("/v1/tts", dependencies=[Depends(require_token)], status_code=202)
+def create_tts(request: TtsRequest) -> dict:
+    if not request.text.strip():
+        raise HTTPException(status_code=400, detail="Text is required.")
+    params = request.model_dump()
+    if request.voice_id:
+        voice = db.get_voice(request.voice_id)
+        if voice is None:
+            raise HTTPException(status_code=404, detail="Voice not found.")
+    job = db.create_job(
+        kind="tts",
+        engine="tts",
+        voice_id=request.voice_id,
+        params={k: v for k, v in params.items() if v is not None},
+    )
+    jobs.submit(job["id"])
+    return db.get_job(job["id"])  # type: ignore[return-value]
+
+
+@app.post("/v1/rvc/assets/prepare", dependencies=[Depends(require_token)])
+def prepare_rvc_assets(training: bool = False) -> dict:
+    try:
+        return engines.rvc_prepare(training)
+    except engines.EngineError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@app.post("/v1/rvc/voices", dependencies=[Depends(require_token)], status_code=201)
+def create_rvc_voice(
+    name: str = Form(...),
+    description: str | None = Form(default=None),
+    settings: str | None = Form(default=None),
+    model: UploadFile = File(...),
+    index: UploadFile | None = File(default=None),
+) -> dict:
+    name = name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="A voice name is required.")
+    if not (model.filename or "").lower().endswith(".pth"):
+        raise HTTPException(status_code=400, detail="RVC models must be .pth files.")
+    if index is not None and not (index.filename or "").lower().endswith(".index"):
+        raise HTTPException(status_code=400, detail="RVC indexes must be .index files.")
+    try:
+        parsed_settings = json.loads(settings) if settings else {}
+    except json.JSONDecodeError as error:
+        raise HTTPException(status_code=400, detail=f"settings must be valid JSON: {error}") from error
+
+    voice_id = db.new_id("voice")
+    directory = config.VOICES_DIR / voice_id
+    directory.mkdir(parents=True, exist_ok=True)
+
+    model_path = directory / "model.pth"
+    size = save_upload(model, model_path)
+    index_path: str | None = None
+    if index is not None:
+        stored_index = directory / "model.index"
+        size += save_upload(index, stored_index)
+        index_path = str(stored_index)
+
+    return db.create_voice(
+        voice_id=voice_id,
+        name=name,
+        engine="rvc",
+        description=description,
+        language=None,
+        reference_audio=None,
+        model_path=str(model_path),
+        index_path=index_path,
+        settings=parsed_settings,
+        size_bytes=size,
+    )
+
+
+class TrainingRequest(BaseModel):
+    name: str
+    voice_name: str | None = None
+    epochs: int = 200
+    batch_size: int = 8
+    f0: bool = True
+    sample_rate_option: str = "40k"
+
+
+@app.post("/v1/training", dependencies=[Depends(require_token)], status_code=202)
+def create_training(request: TrainingRequest, dataset: UploadFile = File(...)) -> dict:
+    if not (dataset.filename or "").lower().endswith(".zip"):
+        raise HTTPException(status_code=400, detail="Upload the dataset as a .zip of audio files.")
+    experiment = "".join(ch for ch in request.name if ch.isalnum() or ch in "-_")[:48]
+    if not experiment:
+        raise HTTPException(status_code=400, detail="Training name must contain letters or digits.")
+
+    job = db.create_job(
+        kind="train",
+        engine="rvc",
+        voice_id=None,
+        params={
+            "experiment": experiment,
+            "voice_name": request.voice_name or request.name,
+            "epochs": request.epochs,
+            "batch_size": request.batch_size,
+            "f0": request.f0,
+            "sample_rate_option": request.sample_rate_option,
+        },
+    )
+
+    archive = config.DATASETS_DIR / job["id"] / "dataset.zip"
+    save_upload(dataset, archive)
+    target = config.DATASETS_DIR / job["id"] / "dataset"
+    try:
+        with zipfile.ZipFile(archive) as bundle:
+            for member in bundle.namelist():
+                resolved = (target / member).resolve()
+                if not resolved.is_relative_to(target.resolve()):
+                    raise HTTPException(status_code=400, detail="Archive contains an unsafe path.")
+            bundle.extractall(target)
+        archive.unlink(missing_ok=True)
+    except zipfile.BadZipFile as error:
+        raise HTTPException(status_code=400, detail=f"Dataset archive is not a valid zip: {error}") from error
+    return db.get_job(job["id"])  # type: ignore[return-value]
+
+
+@app.get("/v1/backup", dependencies=[Depends(require_token)])
+def download_backup() -> FileResponse:
+    """Package every user-owned artifact so a worker can be rebuilt elsewhere."""
+    config.BACKUPS_DIR.mkdir(parents=True, exist_ok=True)
+    for stale in config.BACKUPS_DIR.glob("cloud-voice-backup-*.tar.gz"):
+        stale.unlink(missing_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
+    archive = config.BACKUPS_DIR / f"cloud-voice-backup-{stamp}.tar.gz"
+
+    include: list[tuple[str, Path]] = [
+        ("cloud-voice.sqlite3", config.DATABASE_PATH),
+        ("voices", config.VOICES_DIR),
+    ]
+    with tarfile.open(archive, "w:gz") as bundle:
+        bundle.add(str(config.DATABASE_PATH), arcname="cloud-voice.sqlite3")
+        bundle.add(str(config.VOICES_DIR), arcname="voices")
+    return FileResponse(archive, filename=archive.name, media_type="application/gzip")
+
+
+@app.post("/v1/restore", dependencies=[Depends(require_token)])
+def restore_backup(archive: UploadFile = File(...)) -> dict:
+    staged = config.BACKUPS_DIR / "restore-upload.tar.gz"
+    save_upload(archive, staged)
+    stage_dir = config.BACKUPS_DIR / "restore"
+    shutil.rmtree(stage_dir, ignore_errors=True)
+    stage_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        with tarfile.open(staged, "r:gz") as bundle:
+            for member in bundle.getmembers():
+                resolved = (stage_dir / member.name).resolve()
+                if not resolved.is_relative_to(stage_dir.resolve()):
+                    raise HTTPException(status_code=400, detail="Backup contains an unsafe path.")
+            bundle.extractall(stage_dir)
+    except tarfile.TarError as error:
+        raise HTTPException(status_code=400, detail=f"Backup archive could not be read: {error}") from error
+    finally:
+        staged.unlink(missing_ok=True)
+
+    restored_voices = 0
+    source_db = stage_dir / "cloud-voice.sqlite3"
+    if source_db.is_file():
+        shutil.copyfile(source_db, config.DATABASE_PATH)
+
+    source_voices = stage_dir / "voices"
+    if source_voices.is_dir():
+        for voice_dir in source_voices.iterdir():
+            if not voice_dir.is_dir():
+                continue
+            destination = config.VOICES_DIR / voice_dir.name
+            if destination.exists():
+                shutil.rmtree(destination, ignore_errors=True)
+            shutil.copytree(voice_dir, destination)
+            restored_voices += 1
+
+    shutil.rmtree(stage_dir, ignore_errors=True)
+    return {"restored_voices": restored_voices, "voices": len(db.list_voices())}

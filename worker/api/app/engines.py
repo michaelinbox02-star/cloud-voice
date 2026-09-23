@@ -57,3 +57,28 @@ def seed_warmup() -> dict:
 
 def seed_convert(payload: dict) -> dict:
     return _post(f"{config.SEED_ENGINE_URL}/v1/convert", payload, timeout=3600)
+
+
+def rvc_health() -> dict:
+    return _get(f"{config.RVC_ENGINE_URL}/health")
+
+
+def rvc_prepare(training: bool) -> dict:
+    return _post(f"{config.RVC_ENGINE_URL}/v1/assets/prepare?training={str(training).lower()}", {}, timeout=3600)
+
+
+def rvc_convert(payload: dict) -> dict:
+    return _post(f"{config.RVC_ENGINE_URL}/v1/convert", payload, timeout=3600)
+
+
+def rvc_train(payload: dict) -> dict:
+    # Training runs many sequential stages; allow a long ceiling.
+    return _post(f"{config.RVC_ENGINE_URL}/v1/train", payload, timeout=86400)
+
+
+def tts_health() -> dict:
+    return _get(f"{config.TTS_ENGINE_URL}/health")
+
+
+def tts_speech(payload: dict) -> dict:
+    return _post(f"{config.TTS_ENGINE_URL}/v1/speech", payload, timeout=1800)

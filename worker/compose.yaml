@@ -46,7 +46,36 @@ services:
       - voice_data:/data
       - realtime_checkpoints:/opt/seed-vc-realtime/checkpoints
 
+  rvc:
+    build:
+      context: ./rvc
+    restart: unless-stopped
+    gpus: all
+    env_file:
+      - ../.env
+    volumes:
+      - voice_data:/data
+      - rvc_assets:/opt/rvc/assets
+      - rvc_logs:/opt/rvc/logs
+      - rvc_cache:/opt/rvc/.hf
+
+  tts:
+    build:
+      context: ./tts
+    restart: unless-stopped
+    env_file:
+      - ../.env
+    volumes:
+      - voice_data:/data
+      - tts_models:/opt/tts/models
+      - tts_cache:/root/.cache/huggingface
+
 volumes:
   voice_data:
   seed_checkpoints:
   realtime_checkpoints:
+  rvc_assets:
+  rvc_logs:
+  rvc_cache:
+  tts_models:
+  tts_cache:

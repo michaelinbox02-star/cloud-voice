@@ -19,11 +19,16 @@ DATABASE_PATH: Path = DATA_ROOT / "cloud-voice.sqlite3"
 API_TOKEN: str = os.environ.get("CLOUD_VOICE_API_TOKEN", "")
 ENGINE_TOKEN: str = os.environ.get("CLOUD_VOICE_ENGINE_TOKEN", "")
 SEED_ENGINE_URL: str = os.environ.get("CLOUD_VOICE_SEED_URL", "http://seed:8790")
+RVC_ENGINE_URL: str = os.environ.get("CLOUD_VOICE_RVC_URL", "http://rvc:8792")
+TTS_ENGINE_URL: str = os.environ.get("CLOUD_VOICE_TTS_URL", "http://tts:8793")
+
+DATASETS_DIR: Path = DATA_ROOT / "datasets"
+BACKUPS_DIR: Path = DATA_ROOT / "backups"
 
 MAX_UPLOAD_BYTES: int = int(os.environ.get("CLOUD_VOICE_MAX_UPLOAD_BYTES", str(512 * 1024 * 1024)))
 AUDIO_SUFFIXES: frozenset[str] = frozenset({".wav", ".flac", ".mp3", ".m4a", ".ogg", ".opus", ".aac"})
 
 
 def ensure_directories() -> None:
-    for directory in (DATA_ROOT, VOICES_DIR, UPLOADS_DIR, OUTPUTS_DIR):
+    for directory in (DATA_ROOT, VOICES_DIR, UPLOADS_DIR, OUTPUTS_DIR, DATASETS_DIR, BACKUPS_DIR):
         directory.mkdir(parents=True, exist_ok=True)

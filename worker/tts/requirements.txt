@@ -1,0 +1,8 @@
+kokoro==0.9.4
+misaki[en]==0.9.4
+soundfile==0.12.1
+numpy==1.26.4
+fastapi==0.115.12
+uvicorn==0.34.2
+python-multipart==0.0.20
+huggingface-hub==0.28.1
