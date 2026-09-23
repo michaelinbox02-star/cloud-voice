@@ -42,6 +42,7 @@ export function RealtimePage({ online }: Props) {
   const [blockSeconds, setBlockSeconds] = useState<number | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [micAccess, setMicAccess] = useState<"unknown" | "granted" | "denied">("unknown");
+  const [linkState, setLinkState] = useState<string>("idle");
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localRef = useRef<MediaStream | null>(null);
@@ -141,6 +142,7 @@ export function RealtimePage({ online }: Props) {
     localRef.current?.getTracks().forEach((track) => track.stop());
     localRef.current = null;
     setLive(false);
+    setLinkState("idle");
     setStats(null);
     setStartedAt(null);
     if (session) {
@@ -179,8 +181,27 @@ export function RealtimePage({ online }: Props) {
       const ticket = await realtimeBegin(voiceId, preset);
       sessionRef.current = { id: ticket.session_id, token: ticket.token, voiceId };
 
-      const pc = new RTCPeerConnection({ iceServers: [] });
+      // The worker gathers its own candidates, but the desktop has to produce
+      // usable ones too. Chromium normally hides local addresses behind mDNS
+      // `.local` names, which aiortc cannot resolve, so ICE never completes and
+      // the server sits waiting for audio that never arrives. STUN gives both
+      // sides a routable address to try.
+      const pc = new RTCPeerConnection({
+        iceServers: [
+          { urls: "stun:stun.l.google.com:19302" },
+          { urls: "stun:stun1.l.google.com:19302" },
+        ],
+      });
       pcRef.current = pc;
+      setLinkState("connecting");
+      pc.onconnectionstatechange = () => {
+        setLinkState(pc.connectionState);
+        if (pc.connectionState === "failed") {
+          setError(
+            "The audio link could not be established. Your network is probably blocking the direct UDP path to the worker; try a different network or move the worker closer.",
+          );
+        }
+      };
       stream.getTracks().forEach((track) => pc.addTrack(track, stream));
 
       const remote = new MediaStream();
@@ -207,6 +228,17 @@ export function RealtimePage({ online }: Props) {
       setBlockSeconds(answer.block_seconds);
       setLive(true);
       setStartedAt(Date.now());
+
+      // If media never starts flowing, say so instead of sitting silently at
+      // "live" with nothing happening.
+      window.setTimeout(() => {
+        if (sessionRef.current?.id !== ticket.session_id) return;
+        if (pcRef.current?.connectionState !== "connected") {
+          setError(
+            "No audio path was established within 25 seconds. The worker is reachable for control but the media connection did not come up.",
+          );
+        }
+      }, 25000);
 
       pollRef.current = window.setInterval(async () => {
         const session = sessionRef.current;
@@ -428,9 +460,15 @@ export function RealtimePage({ online }: Props) {
               </div>
               <div className="stat">
                 <span className="stat-label">Stream health</span>
-                <span className="stat-value">{stats?.dropped_frames === 0 ? "No drops" : `${stats?.dropped_frames} drops`}</span>
+                <span className="stat-value">
+                  {(stats?.blocks ?? 0) === 0
+                    ? "Waiting for audio"
+                    : stats?.dropped_frames === 0
+                      ? "No drops"
+                      : `${stats?.dropped_frames} drops`}
+                </span>
                 <span className="stat-note">
-                  {stats?.blocks ?? 0} blocks · queue {stats?.queued_frames ?? 0}
+                  {stats?.blocks ?? 0} blocks · queue {stats?.queued_frames ?? 0} · link {linkState}
                 </span>
               </div>
             </div>

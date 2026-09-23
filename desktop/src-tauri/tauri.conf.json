@@ -17,7 +17,7 @@
         "height": 780,
         "minWidth": 940,
         "minHeight": 640,
-        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection --use-fake-ui-for-media-stream"
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,WebRtcHideLocalIpsWithMdns --use-fake-ui-for-media-stream"
       }
     ],
     "security": {
