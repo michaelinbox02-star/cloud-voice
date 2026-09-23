@@ -3,24 +3,57 @@ set -euo pipefail
 
 repo_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source /etc/os-release
-if [[ "${ID}" != "ubuntu" || "${VERSION_ID}" != "24.04" ]]; then
-  echo "Cloud Voice Studio currently supports Ubuntu 24.04 GPU workers." >&2
-  exit 1
+# Every engine runs inside its own container, so the host distribution only has
+# to provide a driver, Docker and the NVIDIA runtime. Ubuntu 24.04 is what this
+# was built against; anything else Debian-family is accepted with a warning
+# rather than refused.
+case "${ID:-}" in
+  ubuntu | debian) ;;
+  *)
+    echo "Cloud Voice Studio expects a Debian-family GPU worker (Ubuntu or Debian); found '${ID:-unknown}'." >&2
+    exit 1
+    ;;
+esac
+if [[ "${ID}" == "ubuntu" && "${VERSION_ID}" != "24.04" ]]; then
+  echo "Note: developed on Ubuntu 24.04. Continuing on Ubuntu ${VERSION_ID}; the containers are unaffected." >&2
 fi
 if ! command -v nvidia-smi >/dev/null || ! nvidia-smi -L >/dev/null; then
   echo "An NVIDIA driver and working GPU are required." >&2
   exit 1
 fi
 
-if ! command -v docker >/dev/null; then
+install_docker_from_distro() {
   sudo apt-get update
-  sudo apt-get install -y docker.io docker-compose-v2
+  sudo apt-get install -y docker.io
+  # docker-compose-v2 only exists from Ubuntu 23.04 onward; an older host falls
+  # through to the upstream repository below.
+  sudo apt-get install -y docker-compose-v2 || true
   sudo systemctl enable --now docker
+}
+
+install_docker_from_upstream() {
+  echo "Installing Docker from the official repository..."
+  sudo apt-get update
+  sudo apt-get install -y ca-certificates curl gnupg
+  sudo install -m 0755 -d /etc/apt/keyrings
+  curl -fsSL "https://download.docker.com/linux/${ID}/gpg" |
+    sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+  sudo chmod a+r /etc/apt/keyrings/docker.gpg
+  printf 'deb [arch=%s signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/%s %s stable\n' \
+    "$(dpkg --print-architecture)" "${ID}" "${VERSION_CODENAME}" |
+    sudo tee /etc/apt/sources.list.d/docker.list >/dev/null
+  sudo apt-get update
+  sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+  sudo systemctl enable --now docker
+}
+
+if ! command -v docker >/dev/null 2>&1; then
+  install_docker_from_distro || install_docker_from_upstream
 fi
 
+# Compose v2 is required: the stack uses `gpus:` and `shm_size:`.
 if ! sudo docker compose version >/dev/null 2>&1; then
-  sudo apt-get update
-  sudo apt-get install -y docker-compose-v2
+  install_docker_from_upstream
 fi
 
 if ! command -v nvidia-container-cli >/dev/null; then
