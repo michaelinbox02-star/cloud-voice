@@ -5,6 +5,7 @@ import { workerSystem } from "./api";
 import { ServerPage } from "./pages/ServerPage";
 import { VoicesPage } from "./pages/VoicesPage";
 import { VoiceToVoicePage } from "./pages/VoiceToVoicePage";
+import { RealtimePage } from "./pages/RealtimePage";
 import { PlaceholderPage } from "./pages/PlaceholderPage";
 import "./style.css";
 
@@ -63,7 +64,7 @@ function App() {
   const navigation: { group: string; items: { key: View; label: string; soon?: boolean }[] }[] = [
     {
       group: "Live",
-      items: [{ key: "realtime", label: "Realtime", soon: true }],
+      items: [{ key: "realtime", label: "Realtime" }],
     },
     {
       group: "Library",
@@ -151,19 +152,7 @@ function App() {
         )}
         {view === "voices" && <VoicesPage online={online} onCountChange={setVoiceCount} />}
         {view === "voice-to-voice" && <VoiceToVoicePage online={online} />}
-        {view === "realtime" && (
-          <PlaceholderPage
-            eyebrow="LIVE"
-            title="Realtime"
-            summary="Live voice conversion through a virtual microphone, using WebRTC between this computer and the GPU worker."
-            missing={[
-              "Realtime RVC streaming engine and session negotiation over WebRTC",
-              "Realtime Seed-VC streaming engine",
-              "Continuous microphone capture with device selection and monitoring",
-              "Virtual microphone routing and latency measurement",
-            ]}
-          />
-        )}
+        {view === "realtime" && <RealtimePage online={online} />}
         {view === "tts" && (
           <PlaceholderPage
             eyebrow="STUDIO"

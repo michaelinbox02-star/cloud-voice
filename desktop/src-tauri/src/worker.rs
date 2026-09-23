@@ -15,19 +15,22 @@ use std::time::{Duration, Instant};
 use tauri::Manager;
 
 const REMOTE_API_PORT: u16 = 8765;
+const REMOTE_SIGNALING_PORT: u16 = 8791;
 
 pub struct Tunnel {
     child: Child,
     log_path: PathBuf,
-    pub local_port: u16,
+    pub api_port: u16,
+    pub signaling_port: u16,
 }
 
 impl Tunnel {
     pub fn open(app: &tauri::AppHandle, input: &ServerInput) -> Result<Self, String> {
-        let local_port = free_port()?;
+        let api_port = free_port()?;
+        let signaling_port = free_port()?;
         let data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
         std::fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
-        let log_path = data_dir.join(format!("tunnel-{local_port}.log"));
+        let log_path = data_dir.join(format!("tunnel-{api_port}.log"));
         let log = File::create(&log_path).map_err(|error| error.to_string())?;
         let log_copy = log.try_clone().map_err(|error| error.to_string())?;
 
@@ -39,7 +42,12 @@ impl Tunnel {
             .arg("-o")
             .arg("ServerAliveInterval=20")
             .arg("-L")
-            .arg(format!("127.0.0.1:{local_port}:127.0.0.1:{REMOTE_API_PORT}"))
+            .arg(format!("127.0.0.1:{api_port}:127.0.0.1:{REMOTE_API_PORT}"))
+            // Realtime signalling is a second loopback service on the worker.
+            .arg("-L")
+            .arg(format!(
+                "127.0.0.1:{signaling_port}:127.0.0.1:{REMOTE_SIGNALING_PORT}"
+            ))
             .arg(format!("{}@{}", input.username, input.host))
             .stdin(Stdio::null())
             .stdout(Stdio::null())
@@ -53,7 +61,8 @@ impl Tunnel {
         let mut tunnel = Tunnel {
             child,
             log_path,
-            local_port,
+            api_port,
+            signaling_port,
         };
         tunnel.wait_until_ready(&log_copy)?;
         Ok(tunnel)
@@ -69,7 +78,7 @@ impl Tunnel {
                 ));
             }
             if TcpStream::connect_timeout(
-                &format!("127.0.0.1:{}", self.local_port).parse().unwrap(),
+                &format!("127.0.0.1:{}", self.api_port).parse().unwrap(),
                 Duration::from_millis(300),
             )
             .is_ok()
@@ -122,6 +131,7 @@ fn hide_console_window(_: &mut Command) {}
 
 pub struct Connection {
     base_url: String,
+    signaling_url: String,
     token: String,
     client: reqwest::blocking::Client,
     tunnel: Tunnel,
@@ -136,7 +146,8 @@ impl Connection {
             .build()
             .map_err(|error| error.to_string())?;
         let connection = Connection {
-            base_url: format!("http://127.0.0.1:{}", tunnel.local_port),
+            base_url: format!("http://127.0.0.1:{}", tunnel.api_port),
+            signaling_url: format!("http://127.0.0.1:{}", tunnel.signaling_port),
             token,
             client,
             tunnel,
@@ -151,6 +162,33 @@ impl Connection {
 
     fn url(&self, path: &str) -> String {
         format!("{}{}", self.base_url, path)
+    }
+
+    /// Realtime signalling carries its own short-lived ticket rather than the
+    /// worker credential, so no bearer token is attached to these calls.
+    pub fn signaling_request(
+        &self,
+        method: &str,
+        path: &str,
+        body: Option<Value>,
+        timeout_seconds: Option<u64>,
+    ) -> Result<Value, String> {
+        let request = self.client.request(
+            method.parse().map_err(|_| format!("Unsupported method {method}"))?,
+            format!("{}{}", self.signaling_url, path),
+        );
+        let request = match body {
+            Some(value) => request.json(&value),
+            None => request,
+        };
+        let request = match timeout_seconds {
+            Some(seconds) => request.timeout(Duration::from_secs(seconds)),
+            None => request,
+        };
+        let response = request
+            .send()
+            .map_err(|error| format!("Realtime request failed: {error}"))?;
+        decode(response)
     }
 
     pub fn request(

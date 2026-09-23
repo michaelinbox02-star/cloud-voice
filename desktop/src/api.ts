@@ -105,3 +105,50 @@ export const workerFetchArtifact = (path: string, fileName: string) =>
   invoke<string>("worker_fetch_artifact", { path, fileName });
 export const stagePreview = (sourcePath: string) => invoke<string>("stage_preview", { sourcePath });
 export const revealPath = (path: string) => invoke<void>("reveal_path", { path });
+
+export type RealtimeTicket = {
+  session_id: string;
+  token: string;
+  expires_at: number;
+  voice_id: string;
+  voice_name: string;
+  preset: string;
+};
+
+export type RealtimeAnswer = {
+  sdp: string;
+  type: RTCSdpType;
+  model_rate: number;
+  block_seconds: number;
+  output_sample_rate: number;
+};
+
+export type RealtimeStats = {
+  state: string;
+  blocks: number;
+  inference_ms_mean: number | null;
+  inference_ms_p95: number | null;
+  queued_frames: number;
+  dropped_frames: number;
+  uptime_seconds: number;
+  connection_state: string | null;
+};
+
+export type RealtimePreset = "low-latency" | "balanced" | "quality";
+
+export const realtimeBegin = (
+  voiceId: string,
+  preset: RealtimePreset,
+  diffusionSteps?: number,
+) => invoke<RealtimeTicket>("realtime_begin", { draft: { voiceId, preset, diffusionSteps } });
+
+export const realtimeOffer = (sessionId: string, token: string, sdp: string, kind: string) =>
+  invoke<RealtimeAnswer>("realtime_offer", { sessionId, token, sdp, kind });
+
+export const realtimeStats = (sessionId: string) =>
+  invoke<RealtimeStats>("realtime_stats", { sessionId });
+
+export const realtimeEnd = (sessionId: string, voiceId: string) =>
+  invoke<void>("realtime_end", { sessionId, voiceId });
+
+export const realtimeHealth = () => invoke<Record<string, unknown>>("realtime_health");

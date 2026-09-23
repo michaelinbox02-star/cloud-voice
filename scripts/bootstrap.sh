@@ -69,11 +69,25 @@ done
 # Engine containers pull multi-gigabyte checkpoints on first start. Report
 # status without blocking, so provisioning still succeeds on a slow link.
 engine_token="$(sed -n 's/^CLOUD_VOICE_ENGINE_TOKEN=//p' .env)"
+seed_ready="no"
 for _ in {1..10}; do
-  if curl --silent --fail -H "Authorization: Bearer ${engine_token}" http://127.0.0.1:8790/health; then
-    printf '\nSeed-VC engine is answering.\n'
-    exit 0
+  if curl --silent --fail -H "Authorization: Bearer ${engine_token}" http://127.0.0.1:8790/health >/dev/null; then
+    seed_ready="yes"
+    break
   fi
   sleep 3
 done
-printf '\nControl plane is healthy. The Seed-VC engine is still starting; check: sudo docker compose -f worker/compose.yaml logs seed\n'
+
+realtime_ready="no"
+for _ in {1..10}; do
+  if curl --silent --fail http://127.0.0.1:8791/health >/dev/null; then
+    realtime_ready="yes"
+    break
+  fi
+  sleep 3
+done
+
+printf '\nControl plane: healthy\nSeed-VC engine: %s\nRealtime engine: %s\n' "${seed_ready}" "${realtime_ready}"
+if [[ "${seed_ready}" != "yes" || "${realtime_ready}" != "yes" ]]; then
+  printf 'Engines download models on first start. Check: sudo docker compose -f worker/compose.yaml logs\n'
+fi

@@ -352,6 +352,97 @@ fn worker_fetch_artifact(
     Ok(destination.to_string_lossy().into_owned())
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RealtimeDraft {
+    voice_id: String,
+    preset: String,
+    diffusion_steps: Option<i64>,
+    inference_cfg_rate: Option<f64>,
+}
+
+/// Ask the control plane for a short-lived realtime ticket. The ticket is what
+/// authorises the media session, so the worker credential never leaves Rust.
+#[tauri::command]
+fn realtime_begin(state: tauri::State<'_, AppState>, draft: RealtimeDraft) -> Result<Value, String> {
+    let mut payload = serde_json::json!({
+        "voice_id": draft.voice_id,
+        "preset": draft.preset,
+    });
+    if let Some(steps) = draft.diffusion_steps {
+        payload["diffusion_steps"] = serde_json::json!(steps);
+    }
+    if let Some(rate) = draft.inference_cfg_rate {
+        payload["inference_cfg_rate"] = serde_json::json!(rate);
+    }
+    with_connection(&state, |connection| {
+        connection.request("POST", "/v1/realtime/sessions", Some(payload), Some(60))
+    })
+}
+
+#[tauri::command]
+fn realtime_offer(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    token: String,
+    sdp: String,
+    kind: String,
+) -> Result<Value, String> {
+    let payload = serde_json::json!({
+        "session_id": session_id,
+        "token": token,
+        "sdp": sdp,
+        "type": kind,
+    });
+    // The engine loads its model on first use, which can take a minute.
+    with_connection(&state, |connection| {
+        connection.signaling_request("POST", "/v1/offer", Some(payload), Some(900))
+    })
+}
+
+#[tauri::command]
+fn realtime_stats(state: tauri::State<'_, AppState>, session_id: String) -> Result<Value, String> {
+    with_connection(&state, |connection| {
+        connection.signaling_request(
+            "GET",
+            &format!("/v1/sessions/{session_id}/stats"),
+            None,
+            Some(15),
+        )
+    })
+}
+
+#[tauri::command]
+fn realtime_end(
+    state: tauri::State<'_, AppState>,
+    session_id: String,
+    voice_id: String,
+) -> Result<(), String> {
+    with_connection(&state, |connection| {
+        let _ = connection.signaling_request(
+            "POST",
+            &format!("/v1/sessions/{session_id}/close"),
+            None,
+            Some(20),
+        );
+        let _ = connection.request(
+            "DELETE",
+            &format!("/v1/realtime/sessions/{session_id}"),
+            None,
+            Some(20),
+        );
+        let _ = voice_id;
+        Ok(())
+    })
+}
+
+#[tauri::command]
+fn realtime_health(state: tauri::State<'_, AppState>) -> Result<Value, String> {
+    with_connection(&state, |connection| {
+        connection.signaling_request("GET", "/health", None, Some(15))
+    })
+}
+
 #[tauri::command]
 fn reveal_path(path: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
@@ -409,6 +500,11 @@ pub fn run() {
             worker_fetch_artifact,
             reveal_path,
             stage_preview,
+            realtime_begin,
+            realtime_offer,
+            realtime_stats,
+            realtime_end,
+            realtime_health,
         ])
         .run(tauri::generate_context!())
         .expect("Cloud Voice Studio failed to start");
