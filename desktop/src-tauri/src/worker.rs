@@ -220,18 +220,17 @@ impl Connection {
         &self,
         path: &str,
         fields: Vec<(String, String)>,
-        file_field: &str,
-        file_path: Option<&Path>,
+        files: Vec<(String, PathBuf)>,
         timeout_seconds: u64,
     ) -> Result<Value, String> {
         let mut form = reqwest::blocking::multipart::Form::new();
         for (name, value) in fields {
             form = form.text(name, value);
         }
-        if let Some(path) = file_path {
-            form = form.file(file_field.to_string(), path).map_err(|error| {
-                format!("Could not read {}: {error}", path.display())
-            })?;
+        for (field, path) in files {
+            form = form
+                .file(field, &path)
+                .map_err(|error| format!("Could not read {}: {error}", path.display()))?;
         }
         let response = self
             .client

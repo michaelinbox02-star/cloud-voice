@@ -266,10 +266,23 @@ def train(request: TrainRequest) -> dict:
 
     weights = sorted((asset_tools.ASSETS / "weights").glob("*.pth"), key=lambda p: p.stat().st_mtime, reverse=True)
     indices = sorted((asset_tools.ASSETS / "indices").glob("*added*.index"), key=lambda p: p.stat().st_mtime, reverse=True)
+
+    # Publish the artifacts into the shared data volume so the control plane and
+    # the desktop can reach them without knowing this container's layout.
+    published = DATA_ROOT / "trained" / experiment
+    published.mkdir(parents=True, exist_ok=True)
+    model_path = index_path = None
+    if weights:
+        model_path = published / weights[0].name
+        shutil.copyfile(weights[0], model_path)
+    if indices:
+        index_path = published / indices[0].name
+        shutil.copyfile(indices[0], index_path)
+
     return {
         "experiment": experiment,
-        "model_path": str(weights[0]) if weights else None,
-        "index_path": str(indices[0]) if indices else None,
+        "model_path": str(model_path) if model_path else None,
+        "index_path": str(index_path) if index_path else None,
         "steps": steps,
         "experiment_dir": str(log_dir),
     }

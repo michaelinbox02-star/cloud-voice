@@ -271,7 +271,11 @@ fn create_voice(state: tauri::State<'_, AppState>, draft: VoiceDraft) -> Result<
     }
     let reference = draft.reference_path.map(PathBuf::from);
     with_connection(&state, |connection| {
-        connection.request_multipart("/v1/voices", fields, "reference", reference.as_deref(), 600)
+        let files = reference
+            .filter(|path| path.is_file())
+            .map(|path| vec![("reference".to_string(), path)])
+            .unwrap_or_default();
+        connection.request_multipart("/v1/voices", fields, files, 600)
     })
 }
 
@@ -318,7 +322,12 @@ fn start_conversion(state: tauri::State<'_, AppState>, draft: ConversionDraft) -
         ("params".to_string(), draft.params.unwrap_or_else(|| "{}".to_string())),
     ];
     with_connection(&state, |connection| {
-        connection.request_multipart("/v1/conversions", fields, "source", Some(&source), 3600)
+        connection.request_multipart(
+            "/v1/conversions",
+            fields,
+            vec![("source".to_string(), source)],
+            3600,
+        )
     })
 }
 
@@ -463,6 +472,107 @@ fn realtime_health(state: tauri::State<'_, AppState>) -> Result<Value, String> {
     })
 }
 
+/// Synthesis and training take a JSON body; only the dataset and model files
+/// need multipart.
+#[tauri::command]
+fn start_tts(state: tauri::State<'_, AppState>, draft: Value) -> Result<Value, String> {
+    with_connection(&state, |connection| {
+        connection.request("POST", "/v1/tts", Some(draft), Some(300))
+    })
+}
+
+#[tauri::command]
+fn start_training(
+    state: tauri::State<'_, AppState>,
+    draft: Value,
+    dataset_path: String,
+) -> Result<Value, String> {
+    let dataset = PathBuf::from(&dataset_path);
+    if !dataset.is_file() {
+        return Err("Choose a .zip archive of training audio.".into());
+    }
+    let fields: Vec<(String, String)> = draft
+        .as_object()
+        .ok_or_else(|| "Training settings were malformed.".to_string())?
+        .iter()
+        .map(|(key, value)| {
+            let text = match value {
+                Value::String(text) => text.clone(),
+                other => other.to_string(),
+            };
+            (key.clone(), text)
+        })
+        .collect();
+    with_connection(&state, |connection| {
+        connection.request_multipart(
+            "/v1/training",
+            fields,
+            vec![("dataset".to_string(), dataset)],
+            3600,
+        )
+    })
+}
+
+#[tauri::command]
+fn create_rvc_voice(
+    state: tauri::State<'_, AppState>,
+    draft: Value,
+    model_path: String,
+    index_path: Option<String>,
+) -> Result<Value, String> {
+    let model = PathBuf::from(&model_path);
+    if !model.is_file() {
+        return Err("Choose an RVC .pth model file.".into());
+    }
+    let object = draft
+        .as_object()
+        .ok_or_else(|| "Voice details were malformed.".to_string())?;
+    let fields: Vec<(String, String)> = object
+        .iter()
+        .map(|(key, value)| {
+            let text = match value {
+                Value::String(text) => text.clone(),
+                other => other.to_string(),
+            };
+            (key.clone(), text)
+        })
+        .collect();
+
+    let mut files = vec![("model".to_string(), model)];
+    if let Some(path) = index_path.map(PathBuf::from).filter(|path| path.is_file()) {
+        files.push(("index".to_string(), path));
+    }
+    with_connection(&state, |connection| {
+        connection.request_multipart("/v1/rvc/voices", fields, files, 3600)
+    })
+}
+
+#[tauri::command]
+fn download_backup(state: tauri::State<'_, AppState>, destination_path: String) -> Result<String, String> {
+    let destination = PathBuf::from(&destination_path);
+    if let Some(parent) = destination.parent() {
+        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+    }
+    with_connection(&state, |connection| connection.download("/v1/backup", &destination))?;
+    Ok(destination.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn restore_backup(state: tauri::State<'_, AppState>, archive_path: String) -> Result<Value, String> {
+    let archive = PathBuf::from(&archive_path);
+    if !archive.is_file() {
+        return Err("Choose a backup archive to restore.".into());
+    }
+    with_connection(&state, |connection| {
+        connection.request_multipart(
+            "/v1/restore",
+            Vec::new(),
+            vec![("archive".to_string(), archive)],
+            3600,
+        )
+    })
+}
+
 #[tauri::command]
 fn reveal_path(path: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
@@ -525,6 +635,11 @@ pub fn run() {
             realtime_stats,
             realtime_end,
             realtime_health,
+            start_tts,
+            start_training,
+            create_rvc_voice,
+            download_backup,
+            restore_backup,
         ])
         .run(tauri::generate_context!())
         .expect("Cloud Voice Studio failed to start");

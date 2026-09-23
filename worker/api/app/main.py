@@ -418,6 +418,52 @@ class TrainingRequest(BaseModel):
     sample_rate_option: str = "40k"
 
 
+class WorkerVoiceRequest(BaseModel):
+    name: str
+    description: str | None = None
+    model_path: str
+    index_path: str | None = None
+    settings: dict = {}
+
+
+@app.post("/v1/rvc/voices/from-worker", dependencies=[Depends(require_token)], status_code=201)
+def register_trained_voice(request: WorkerVoiceRequest) -> dict:
+    """Register a model that already lives on the worker (for example, one this
+    worker just trained) without copying the file across the network twice."""
+    model = Path(request.model_path)
+    if not model.is_file() or not model.is_relative_to(config.DATA_ROOT):
+        raise HTTPException(status_code=404, detail="Model path is not on this worker.")
+    index = Path(request.index_path) if request.index_path else None
+    if index is not None and (not index.is_file() or not index.is_relative_to(config.DATA_ROOT)):
+        raise HTTPException(status_code=404, detail="Index path is not on this worker.")
+
+    voice_id = db.new_id("voice")
+    directory = config.VOICES_DIR / voice_id
+    directory.mkdir(parents=True, exist_ok=True)
+    stored_model = directory / "model.pth"
+    shutil.copyfile(model, stored_model)
+    size = stored_model.stat().st_size
+    stored_index: str | None = None
+    if index is not None:
+        target = directory / "model.index"
+        shutil.copyfile(index, target)
+        size += target.stat().st_size
+        stored_index = str(target)
+
+    return db.create_voice(
+        voice_id=voice_id,
+        name=request.name.strip() or "Trained voice",
+        engine="rvc",
+        description=request.description,
+        language=None,
+        reference_audio=None,
+        model_path=str(stored_model),
+        index_path=stored_index,
+        settings=request.settings,
+        size_bytes=size,
+    )
+
+
 @app.post("/v1/training", dependencies=[Depends(require_token)], status_code=202)
 def create_training(request: TrainingRequest, dataset: UploadFile = File(...)) -> dict:
     if not (dataset.filename or "").lower().endswith(".zip"):
