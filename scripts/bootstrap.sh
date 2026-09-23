@@ -18,6 +18,11 @@ if ! command -v docker >/dev/null; then
   sudo systemctl enable --now docker
 fi
 
+if ! sudo docker compose version >/dev/null 2>&1; then
+  sudo apt-get update
+  sudo apt-get install -y docker-compose-v2
+fi
+
 if ! command -v nvidia-container-cli >/dev/null; then
   sudo apt-get update
   sudo apt-get install -y curl ca-certificates gnupg

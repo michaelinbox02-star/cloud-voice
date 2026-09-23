@@ -1,0 +1,18 @@
+[package]
+name = "cloud-voice-studio"
+version = "0.1.0"
+description = "Cloud Voice Studio desktop client"
+authors = ["Cloud Voice Studio"]
+edition = "2021"
+
+[lib]
+name = "cloud_voice_studio_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+keyring = { version = "3", features = ["windows-native"] }

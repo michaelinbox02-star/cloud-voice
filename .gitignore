@@ -3,6 +3,8 @@
 !.env.example
 .ssh-known-hosts
 .npm-cache/
+.cargo-home/
+desktop/src-tauri/gen/
 node_modules/
 dist/
 target/
