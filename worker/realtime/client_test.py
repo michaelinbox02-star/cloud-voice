@@ -20,6 +20,7 @@ import av
 import numpy as np
 import soundfile as sf
 from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
+from aiortc.mediastreams import MediaStreamError
 
 API = os.environ.get("CLOUD_VOICE_API", "http://127.0.0.1:8765")
 SIGNALING = os.environ.get("CLOUD_VOICE_SIGNALING", "http://127.0.0.1:8791")
@@ -95,18 +96,15 @@ async def main() -> int:
     pc = RTCPeerConnection()
     pc.addTrack(source_track)
 
-    received: list[np.ndarray] = []
+    remote: list[MediaStreamTrack] = []
 
     @pc.on("track")
     def on_track(track: MediaStreamTrack) -> None:
-        async def consume() -> None:
-            while True:
-                frame = await track.recv()
-                data = frame.to_ndarray()
-                data = data.mean(axis=0) if frame.layout.nb_channels > 1 else data.reshape(-1)
-                received.append(data.astype(np.float32))
+        remote.append(track)
 
-        asyncio.ensure_future(consume())
+    @pc.on("connectionstatechange")
+    async def on_state() -> None:
+        print(f"connection state: {pc.connectionState}", flush=True)
 
     await pc.setLocalDescription(await pc.createOffer())
     answer = post(
@@ -121,9 +119,32 @@ async def main() -> int:
     await pc.setRemoteDescription(RTCSessionDescription(sdp=answer["sdp"], type=answer["type"]))
     print(f"negotiated: block={answer['block_seconds']}s model_rate={answer['model_rate']}", flush=True)
 
+    # Wait for the transport to come up before judging the media path.
+    deadline = asyncio.get_event_loop().time() + 20
+    while pc.connectionState != "connected" and asyncio.get_event_loop().time() < deadline:
+        await asyncio.sleep(0.2)
+    if pc.connectionState != "connected":
+        print(f"transport never connected: {pc.iceConnectionState} / {pc.connectionState}", flush=True)
+        await pc.close()
+        return 1
+
+    if not remote:
+        print("no remote audio track was attached", flush=True)
+        await pc.close()
+        return 1
+
+    received: list[np.ndarray] = []
+    track = remote[0]
     deadline = asyncio.get_event_loop().time() + SECONDS
     while asyncio.get_event_loop().time() < deadline:
-        await asyncio.sleep(0.5)
+        try:
+            frame = await asyncio.wait_for(track.recv(), timeout=5)
+        except (asyncio.TimeoutError, MediaStreamError) as error:
+            print(f"receive stopped after {len(received)} frames: {type(error).__name__}", flush=True)
+            break
+        data = frame.to_ndarray()
+        data = data.mean(axis=0) if frame.layout.nb_channels > 1 else data.reshape(-1)
+        received.append(data.astype(np.float32))
 
     stats = json.loads(
         urllib.request.urlopen(
