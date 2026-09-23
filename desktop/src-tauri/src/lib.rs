@@ -23,6 +23,10 @@ const KEYRING_SERVICE: &str = "cloud-voice-studio";
 
 #[derive(Default)]
 struct AppState {
+    /// Set once at startup so a dead tunnel can be reopened without an app handle.
+    data_dir: Mutex<Option<PathBuf>>,
+    /// Remembered from the last successful connect, which is what auto-reconnect needs.
+    last_input: Mutex<Option<ServerInput>>,
     connection: Mutex<Option<Connection>>,
 }
 
@@ -87,15 +91,15 @@ fn validate(input: &ServerInput) -> Result<(), String> {
     Ok(())
 }
 
-fn known_hosts_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+fn app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
     fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
-    Ok(data_dir.join("known_hosts"))
+    Ok(data_dir)
 }
 
-pub(crate) fn ssh_command(app: &tauri::AppHandle, input: &ServerInput) -> Result<Command, String> {
+pub(crate) fn ssh_command_for(input: &ServerInput, data_dir: &Path) -> Result<Command, String> {
     validate(input)?;
-    let known_hosts = known_hosts_path(app)?;
+    let known_hosts = data_dir.join("known_hosts");
     let mut command = Command::new("ssh");
     command
         .arg("-o")
@@ -114,7 +118,7 @@ pub(crate) fn ssh_command(app: &tauri::AppHandle, input: &ServerInput) -> Result
 }
 
 fn ssh_run(app: &tauri::AppHandle, input: &ServerInput, remote_command: &str) -> Result<String, String> {
-    let mut command = ssh_command(app, input)?;
+    let mut command = ssh_command_for(input, &app_data_dir(app)?)?;
     let output = command
         .arg(format!("{}@{}", input.username, input.host))
         .arg(remote_command)
@@ -141,7 +145,7 @@ fn load_token(host: &str) -> Result<String, String> {
         .map_err(|_| "No worker credential is stored for this host. Install the worker first.".to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn probe_server(app: tauri::AppHandle, input: ServerInput) -> Result<ServerResult, String> {
     let command = "set -eu; . /etc/os-release; printf 'OS: %s %s\\n' \"$NAME\" \"$VERSION_ID\"; \
 printf 'GPU: '; nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader; \
@@ -154,7 +158,7 @@ sudo -n true; printf 'Sudo: available\\n'; df -h / | tail -1";
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn deploy_server(app: tauri::AppHandle, input: ServerInput) -> Result<ServerResult, String> {
     validate(&input)?;
     let command = format!(
@@ -178,7 +182,7 @@ cd \"$HOME/cloud-voice\"; git fetch --quiet origin; git checkout --detach {} >/d
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn connect_worker(app: tauri::AppHandle, state: tauri::State<'_, AppState>, input: ServerInput) -> Result<Value, String> {
     validate(&input)?;
     // A worker provisioned outside this app (or before the credential was
@@ -208,14 +212,15 @@ fn connect_worker(app: tauri::AppHandle, state: tauri::State<'_, AppState>, inpu
         connection.shutdown();
     }
 
-    let tunnel = Tunnel::open(&app, &input)?;
+    let tunnel = Tunnel::open(&input, &app_data_dir(&app)?)?;
     let connection = Connection::new(tunnel, token)?;
     let summary = connection.request("GET", "/v1/system", None, None)?;
+    *state.last_input.lock().unwrap() = Some(input);
     *state.connection.lock().unwrap() = Some(connection);
     Ok(summary)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn disconnect_worker(state: tauri::State<'_, AppState>) -> Result<(), String> {
     if let Some(connection) = state.connection.lock().unwrap().take() {
         connection.shutdown();
@@ -223,10 +228,46 @@ fn disconnect_worker(state: tauri::State<'_, AppState>) -> Result<(), String> {
     Ok(())
 }
 
+/// Reopen the tunnel if the ssh process died. A dropped tunnel is the usual
+/// cause of "unexpected disconnect", and recovering automatically means a
+/// network blip does not require the user to reconnect by hand.
+fn ensure_connection(state: &tauri::State<'_, AppState>) -> Result<(), String> {
+    {
+        let guard = state.connection.lock().unwrap();
+        if let Some(connection) = guard.as_ref() {
+            if connection.is_alive() {
+                return Ok(());
+            }
+        }
+    }
+
+    // Read the inputs without holding the connection lock, so late commands
+    // cannot deadlock against connect_worker.
+    let input = state
+        .last_input
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "Not connected to a GPU worker. Open Server and connect first.".to_string())?;
+    let data_dir = state
+        .data_dir
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or_else(|| "The application data directory is unavailable.".to_string())?;
+
+    let token = load_token(&input.host)?;
+    let tunnel = Tunnel::open(&input, &data_dir)?;
+    let connection = Connection::new(tunnel, token)?;
+    *state.connection.lock().unwrap() = Some(connection);
+    Ok(())
+}
+
 fn with_connection<T>(
     state: &tauri::State<'_, AppState>,
     action: impl FnOnce(&Connection) -> Result<T, String>,
 ) -> Result<T, String> {
+    ensure_connection(state)?;
     let guard = state.connection.lock().unwrap();
     let connection = guard
         .as_ref()
@@ -234,12 +275,12 @@ fn with_connection<T>(
     action(connection)
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn worker_system(state: tauri::State<'_, AppState>) -> Result<Value, String> {
     with_connection(&state, |connection| connection.request("GET", "/v1/system", None, None))
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_voices(state: tauri::State<'_, AppState>) -> Result<Value, String> {
     with_connection(&state, |connection| connection.request("GET", "/v1/voices", None, None))
 }
@@ -255,7 +296,7 @@ struct VoiceDraft {
     reference_path: Option<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn create_voice(state: tauri::State<'_, AppState>, draft: VoiceDraft) -> Result<Value, String> {
     let settings = draft.settings.unwrap_or_else(|| "{}".to_string());
     let mut fields: Vec<(String, String)> = vec![
@@ -279,14 +320,14 @@ fn create_voice(state: tauri::State<'_, AppState>, draft: VoiceDraft) -> Result<
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn delete_voice(state: tauri::State<'_, AppState>, voice_id: String) -> Result<Value, String> {
     with_connection(&state, |connection| {
         connection.request("DELETE", &format!("/v1/voices/{voice_id}"), None, None)
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn list_jobs(state: tauri::State<'_, AppState>, limit: Option<u32>) -> Result<Value, String> {
     let limit = limit.unwrap_or(25).clamp(1, 200);
     with_connection(&state, |connection| {
@@ -294,7 +335,7 @@ fn list_jobs(state: tauri::State<'_, AppState>, limit: Option<u32>) -> Result<Va
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn get_job(state: tauri::State<'_, AppState>, job_id: String) -> Result<Value, String> {
     with_connection(&state, |connection| {
         connection.request("GET", &format!("/v1/jobs/{job_id}"), None, None)
@@ -310,7 +351,7 @@ struct ConversionDraft {
     params: Option<String>,
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn start_conversion(state: tauri::State<'_, AppState>, draft: ConversionDraft) -> Result<Value, String> {
     let source = PathBuf::from(&draft.source_path);
     if !source.is_file() {
@@ -332,7 +373,7 @@ fn start_conversion(state: tauri::State<'_, AppState>, draft: ConversionDraft) -
 }
 
 /// One download command for every worker artifact: job audio or reference clip.
-#[tauri::command]
+#[tauri::command(async)]
 fn worker_download(
     state: tauri::State<'_, AppState>,
     path: String,
@@ -353,7 +394,7 @@ fn worker_download(
 
 /// Fetch an artifact into the app cache for in-app playback. `file_name` only
 /// supplies a sanitised label; callers cannot write outside the cache folder.
-#[tauri::command]
+#[tauri::command(async)]
 fn worker_fetch_artifact(
     app: tauri::AppHandle,
     state: tauri::State<'_, AppState>,
@@ -392,7 +433,7 @@ struct RealtimeDraft {
 
 /// Ask the control plane for a short-lived realtime ticket. The ticket is what
 /// authorises the media session, so the worker credential never leaves Rust.
-#[tauri::command]
+#[tauri::command(async)]
 fn realtime_begin(state: tauri::State<'_, AppState>, draft: RealtimeDraft) -> Result<Value, String> {
     let mut payload = serde_json::json!({
         "voice_id": draft.voice_id,
@@ -409,7 +450,7 @@ fn realtime_begin(state: tauri::State<'_, AppState>, draft: RealtimeDraft) -> Re
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn realtime_offer(
     state: tauri::State<'_, AppState>,
     session_id: String,
@@ -429,7 +470,7 @@ fn realtime_offer(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn realtime_stats(state: tauri::State<'_, AppState>, session_id: String) -> Result<Value, String> {
     with_connection(&state, |connection| {
         connection.signaling_request(
@@ -441,7 +482,7 @@ fn realtime_stats(state: tauri::State<'_, AppState>, session_id: String) -> Resu
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn realtime_end(
     state: tauri::State<'_, AppState>,
     session_id: String,
@@ -465,7 +506,7 @@ fn realtime_end(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn realtime_health(state: tauri::State<'_, AppState>) -> Result<Value, String> {
     with_connection(&state, |connection| {
         connection.signaling_request("GET", "/health", None, Some(15))
@@ -474,7 +515,7 @@ fn realtime_health(state: tauri::State<'_, AppState>) -> Result<Value, String> {
 
 /// Synthesis and training take a JSON body; only the dataset and model files
 /// need multipart.
-#[tauri::command]
+#[tauri::command(async)]
 fn start_tts(state: tauri::State<'_, AppState>, draft: Value) -> Result<Value, String> {
     with_connection(&state, |connection| {
         connection.request("POST", "/v1/tts", Some(draft), Some(300))
@@ -483,14 +524,14 @@ fn start_tts(state: tauri::State<'_, AppState>, draft: Value) -> Result<Value, S
 
 /// Register a model that already sits on the worker, such as one it just
 /// trained, so the file is not uploaded back over the network.
-#[tauri::command]
+#[tauri::command(async)]
 fn register_worker_voice(state: tauri::State<'_, AppState>, draft: Value) -> Result<Value, String> {
     with_connection(&state, |connection| {
         connection.request("POST", "/v1/rvc/voices/from-worker", Some(draft), Some(600))
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn start_training(
     state: tauri::State<'_, AppState>,
     draft: Value,
@@ -522,7 +563,7 @@ fn start_training(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn create_rvc_voice(
     state: tauri::State<'_, AppState>,
     draft: Value,
@@ -556,7 +597,7 @@ fn create_rvc_voice(
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn download_backup(state: tauri::State<'_, AppState>, destination_path: String) -> Result<String, String> {
     let destination = PathBuf::from(&destination_path);
     if let Some(parent) = destination.parent() {
@@ -566,7 +607,7 @@ fn download_backup(state: tauri::State<'_, AppState>, destination_path: String) 
     Ok(destination.to_string_lossy().into_owned())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn restore_backup(state: tauri::State<'_, AppState>, archive_path: String) -> Result<Value, String> {
     let archive = PathBuf::from(&archive_path);
     if !archive.is_file() {
@@ -582,7 +623,7 @@ fn restore_backup(state: tauri::State<'_, AppState>, archive_path: String) -> Re
     })
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 fn reveal_path(path: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err("That file is no longer on disk.".into());
@@ -599,7 +640,7 @@ fn reveal_path(path: String) -> Result<(), String> {
 /// Copy a user-selected file into the app cache so the UI can render a
 /// waveform and play it back through the asset protocol. The original path is
 /// what gets uploaded, so large media is never duplicated on the worker.
-#[tauri::command]
+#[tauri::command(async)]
 fn stage_preview(app: tauri::AppHandle, source_path: String) -> Result<String, String> {
     let source = PathBuf::from(&source_path);
     if !source.is_file() {
@@ -623,6 +664,13 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
+        .setup(|app| {
+            let directory = app.path().app_data_dir()?;
+            fs::create_dir_all(&directory)?;
+            let state = app.state::<AppState>();
+            *state.data_dir.lock().unwrap() = Some(directory);
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             probe_server,
             deploy_server,

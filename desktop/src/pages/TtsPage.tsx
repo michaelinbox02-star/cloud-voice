@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { save } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Job, Voice } from "../api";
-import { KOKORO_VOICES, getJob, listVoices, startTts, workerDownload, workerFetchArtifact } from "../api";
+import { KOKORO_VOICES, listVoices, startTts, workerDownload, workerFetchArtifact } from "../api";
+import { trackJob, useJobs } from "../jobStore";
 import { Waveform } from "../components/Waveform";
 import { engineLabel, formatSeconds, statusLabel } from "../format";
 
@@ -15,11 +16,10 @@ export function TtsPage({ online }: Props) {
   const [speed, setSpeed] = useState(1);
   const [targetVoice, setTargetVoice] = useState("");
   const [format, setFormat] = useState<"wav" | "mp3" | "flac">("wav");
-  const [job, setJob] = useState<Job | null>(null);
   const [artifact, setArtifact] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const pollRef = useRef<number | null>(null);
+  const artifacts = useRef<Record<string, string>>({});
 
   useEffect(() => {
     if (!online) {
@@ -31,15 +31,40 @@ export function TtsPage({ online }: Props) {
       .catch((problem) => setError(String(problem)));
   }, [online]);
 
-  useEffect(() => () => {
-    if (pollRef.current) window.clearInterval(pollRef.current);
-  }, []);
+  const jobs = useJobs();
+  const job = jobs.find((entry) => entry.kind === "tts");
+
+  useEffect(() => {
+    if (!job || job.status !== "succeeded") {
+      if (job?.status === "failed") setError(job.error ?? "Synthesis failed.");
+      setArtifact(null);
+      return;
+    }
+    const cached = artifacts.current[job.id];
+    if (cached) {
+      setArtifact(cached);
+      return;
+    }
+    const extension = String(job.metrics?.output_format ?? "wav");
+    let cancelled = false;
+    workerFetchArtifact(`/v1/jobs/${job.id}/audio`, `${job.id}.${extension}`)
+      .then((path) => {
+        if (cancelled) return;
+        artifacts.current[job.id] = path;
+        setArtifact(path);
+      })
+      .catch((problem) => {
+        if (!cancelled) setError(String(problem));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [job?.id, job?.status]);
 
   const generate = async () => {
     setBusy(true);
     setError("");
     setArtifact(null);
-    setJob(null);
     try {
       const created = await startTts({
         text,
@@ -48,27 +73,7 @@ export function TtsPage({ online }: Props) {
         speed,
         output_format: format,
       });
-      setJob(created);
-      if (pollRef.current) window.clearInterval(pollRef.current);
-      pollRef.current = window.setInterval(async () => {
-        try {
-          const latest = await getJob(created.id);
-          setJob(latest);
-          if (latest.status === "succeeded" || latest.status === "failed") {
-            if (pollRef.current) window.clearInterval(pollRef.current);
-            pollRef.current = null;
-            if (latest.status === "succeeded") {
-              const extension = String(latest.metrics?.output_format ?? "wav");
-              setArtifact(await workerFetchArtifact(`/v1/jobs/${latest.id}/audio`, `${latest.id}.${extension}`));
-            } else {
-              setError(latest.error ?? "Synthesis failed.");
-            }
-          }
-        } catch (problem) {
-          setError(String(problem));
-          if (pollRef.current) window.clearInterval(pollRef.current);
-        }
-      }, 1500);
+      trackJob(created);
     } catch (problem) {
       setError(String(problem));
     } finally {

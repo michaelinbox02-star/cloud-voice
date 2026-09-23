@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { convertFileSrc } from "@tauri-apps/api/core";
 import type { Job, Voice } from "../api";
-import { getJob, listVoices, stagePreview, startConversion, workerDownload, workerFetchArtifact } from "../api";
+import { listVoices, stagePreview, startConversion, workerDownload, workerFetchArtifact } from "../api";
+import { trackJob, useJobs } from "../jobStore";
 import { Waveform } from "../components/Waveform";
 import { engineLabel, formatSeconds, statusLabel } from "../format";
 
@@ -31,11 +32,10 @@ export function VoiceToVoicePage({ online }: Props) {
   const [previewPath, setPreviewPath] = useState<string | null>(null);
   const [settings, setSettings] = useState<Settings>(defaults);
   const [advanced, setAdvanced] = useState(false);
-  const [job, setJob] = useState<Job | null>(null);
   const [artifact, setArtifact] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
-  const pollRef = useRef<number | null>(null);
+  const artifacts = useRef<Record<string, string>>({});
 
   useEffect(() => {
     if (!online) {
@@ -50,11 +50,35 @@ export function VoiceToVoicePage({ online }: Props) {
       .catch((problem) => setError(String(problem)));
   }, [online]);
 
+  const jobs = useJobs();
+  const job = jobs.find((entry) => entry.kind === "convert");
+
+  // Fetch the finished audio once per job, and again after a tab switch.
   useEffect(() => {
+    if (!job || job.status !== "succeeded") {
+      setArtifact(null);
+      return;
+    }
+    const cached = artifacts.current[job.id];
+    if (cached) {
+      setArtifact(cached);
+      return;
+    }
+    const extension = String(job.metrics?.output_format ?? "wav");
+    let cancelled = false;
+    workerFetchArtifact(`/v1/jobs/${job.id}/audio`, `${job.id}.${extension}`)
+      .then((path) => {
+        if (cancelled) return;
+        artifacts.current[job.id] = path;
+        setArtifact(path);
+      })
+      .catch((problem) => {
+        if (!cancelled) setError(String(problem));
+      });
     return () => {
-      if (pollRef.current) window.clearInterval(pollRef.current);
+      cancelled = true;
     };
-  }, []);
+  }, [job?.id, job?.status]);
 
   const chooseSource = async () => {
     const selection = await open({
@@ -64,36 +88,12 @@ export function VoiceToVoicePage({ online }: Props) {
     if (typeof selection !== "string") return;
     setSourcePath(selection);
     setArtifact(null);
-    setJob(null);
     setError("");
     try {
       setPreviewPath(await stagePreview(selection));
     } catch {
       setPreviewPath(null);
     }
-  };
-
-  const watch = (jobId: string) => {
-    if (pollRef.current) window.clearInterval(pollRef.current);
-    pollRef.current = window.setInterval(async () => {
-      try {
-        const latest = await getJob(jobId);
-        setJob(latest);
-        if (latest.status === "succeeded" || latest.status === "failed") {
-          if (pollRef.current) window.clearInterval(pollRef.current);
-          pollRef.current = null;
-          if (latest.status === "succeeded") {
-            const extension = String(latest.metrics?.output_format ?? "wav");
-            setArtifact(await workerFetchArtifact(`/v1/jobs/${latest.id}/audio`, `${latest.id}.${extension}`));
-          } else {
-            setError(latest.error ?? "Conversion failed.");
-          }
-        }
-      } catch (problem) {
-        setError(String(problem));
-        if (pollRef.current) window.clearInterval(pollRef.current);
-      }
-    }, 1500);
   };
 
   const convert = async () => {
@@ -109,8 +109,7 @@ export function VoiceToVoicePage({ online }: Props) {
         sourcePath,
         params: JSON.stringify(settings),
       });
-      setJob(created);
-      watch(created.id);
+      trackJob(created);
     } catch (problem) {
       setError(String(problem));
     } finally {

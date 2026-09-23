@@ -132,6 +132,7 @@ nav { display: flex; flex-direction: column; gap: 16px; }
 }
 
 .status-dot.good { background: var(--good); box-shadow: 0 0 0 3px #6fc09422; }
+.status-dot.warn { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
 
 /* ---------- frame ---------- */
 

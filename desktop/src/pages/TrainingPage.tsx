@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import { open } from "@tauri-apps/plugin-dialog";
 import type { Job } from "../api";
-import { createVoice, getJob, listVoices, registerWorkerVoice, startTraining } from "../api";
+import { listVoices, registerWorkerVoice, startTraining } from "../api";
+import { trackJob, useJobs } from "../jobStore";
 import { statusLabel } from "../format";
 
 type Props = { online: boolean; onVoicesChanged: () => void };
@@ -13,15 +14,11 @@ export function TrainingPage({ online, onVoicesChanged }: Props) {
   const [batchSize, setBatchSize] = useState(8);
   const [f0, setF0] = useState(true);
   const [sampleRate, setSampleRate] = useState("40k");
-  const [job, setJob] = useState<Job | null>(null);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [busy, setBusy] = useState(false);
-  const pollRef = useRef<number | null>(null);
-
-  useEffect(() => () => {
-    if (pollRef.current) window.clearInterval(pollRef.current);
-  }, []);
+  const jobs = useJobs();
+  const job = jobs.find((entry) => entry.kind === "train");
 
   const chooseDataset = async () => {
     const selection = await open({ multiple: false, filters: [{ name: "Dataset archive", extensions: ["zip"] }] });
@@ -43,22 +40,7 @@ export function TrainingPage({ online, onVoicesChanged }: Props) {
         { name, voice_name: name, epochs, batch_size: batchSize, f0, sample_rate_option: sampleRate },
         datasetPath,
       );
-      setJob(created);
-      if (pollRef.current) window.clearInterval(pollRef.current);
-      pollRef.current = window.setInterval(async () => {
-        try {
-          const latest = await getJob(created.id);
-          setJob(latest);
-          if (latest.status === "succeeded" || latest.status === "failed") {
-            if (pollRef.current) window.clearInterval(pollRef.current);
-            pollRef.current = null;
-            if (latest.status === "failed") setError(latest.error ?? "Training failed.");
-          }
-        } catch (problem) {
-          setError(String(problem));
-          if (pollRef.current) window.clearInterval(pollRef.current);
-        }
-      }, 4000);
+      trackJob(created);
     } catch (problem) {
       setError(String(problem));
     } finally {

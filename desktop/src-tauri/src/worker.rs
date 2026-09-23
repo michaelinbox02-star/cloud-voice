@@ -4,37 +4,39 @@
 //! reaches it through an SSH local port forward. Nothing is exposed publicly
 //! and no extra firewall rule is required.
 
-use crate::{ssh_command, ServerInput};
+use crate::ServerInput;
 use serde_json::Value;
 use std::fs::File;
 use std::io::Read;
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::Manager;
 
 const REMOTE_API_PORT: u16 = 8765;
 const REMOTE_SIGNALING_PORT: u16 = 8791;
 
 pub struct Tunnel {
-    child: Child,
+    child: Mutex<Child>,
     log_path: PathBuf,
     pub api_port: u16,
     pub signaling_port: u16,
 }
 
 impl Tunnel {
-    pub fn open(app: &tauri::AppHandle, input: &ServerInput) -> Result<Self, String> {
+    /// `data_dir` holds the tunnel's known-hosts and log file. Passing it in
+    /// rather than the app handle lets the connection be rebuilt from a worker
+    /// thread, which is what auto-reconnect needs.
+    pub fn open(input: &ServerInput, data_dir: &Path) -> Result<Self, String> {
         let api_port = free_port()?;
         let signaling_port = free_port()?;
-        let data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
-        std::fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
+        std::fs::create_dir_all(data_dir).map_err(|error| error.to_string())?;
         let log_path = data_dir.join(format!("tunnel-{api_port}.log"));
         let log = File::create(&log_path).map_err(|error| error.to_string())?;
         let log_copy = log.try_clone().map_err(|error| error.to_string())?;
 
-        let mut command = ssh_command(app, input)?;
+        let mut command = crate::ssh_command_for(input, data_dir)?;
         command
             .arg("-N")
             .arg("-o")
@@ -59,7 +61,7 @@ impl Tunnel {
             .map_err(|error| format!("Could not start the SSH tunnel: {error}"))?;
 
         let mut tunnel = Tunnel {
-            child,
+            child: Mutex::new(child),
             log_path,
             api_port,
             signaling_port,
@@ -71,9 +73,9 @@ impl Tunnel {
     fn wait_until_ready(&mut self, _log: &File) -> Result<(), String> {
         let deadline = Instant::now() + Duration::from_secs(25);
         while Instant::now() < deadline {
-            if let Ok(Some(status)) = self.child.try_wait() {
+            if !self.is_alive() {
                 return Err(format!(
-                    "The SSH tunnel exited immediately ({status}). {}",
+                    "The SSH tunnel exited immediately. {}",
                     self.diagnostics()
                 ));
             }
@@ -93,6 +95,12 @@ impl Tunnel {
         ))
     }
 
+    /// True while the ssh process is still running. A dead tunnel is the usual
+    /// cause of "unexpected disconnect", and it can simply be reopened.
+    pub fn is_alive(&self) -> bool {
+        matches!(self.child.lock().unwrap().try_wait(), Ok(None))
+    }
+
     fn diagnostics(&self) -> String {
         let mut text = String::new();
         if let Ok(mut file) = File::open(&self.log_path) {
@@ -106,9 +114,10 @@ impl Tunnel {
         }
     }
 
-    pub fn shutdown(mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+    pub fn shutdown(self) {
+        let mut child = self.child.into_inner().unwrap_or_else(|error| error.into_inner());
+        let _ = child.kill();
+        let _ = child.wait();
     }
 }
 
@@ -158,6 +167,10 @@ impl Connection {
 
     pub fn shutdown(self) {
         self.tunnel.shutdown();
+    }
+
+    pub fn is_alive(&self) -> bool {
+        self.tunnel.is_alive()
     }
 
     fn url(&self, path: &str) -> String {

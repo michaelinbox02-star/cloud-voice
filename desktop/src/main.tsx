@@ -39,6 +39,8 @@ function App() {
   const [system, setSystem] = React.useState<SystemInfo | null>(null);
   const [voiceCount, setVoiceCount] = React.useState(0);
   const [engineReady, setEngineReady] = React.useState(false);
+  const [degraded, setDegraded] = React.useState(false);
+  const failures = React.useRef(0);
 
   const setServer = (next: ServerInput) => {
     setServerState(next);
@@ -48,19 +50,30 @@ function App() {
   const refresh = React.useCallback(async () => {
     try {
       const info = await workerSystem();
+      failures.current = 0;
+      setDegraded(false);
       setSystem(info);
       setVoiceCount(info.voices);
       setEngineReady(info.engines?.["seed-vc"]?.models_loaded === true);
       setOnline(true);
     } catch {
-      setOnline(false);
-      setSystem(null);
+      // Services restart during an install and a long build restarts every
+      // container, so a single failed poll is expected. Only give up after
+      // several in a row, and never discard the last known status.
+      failures.current += 1;
+      if (failures.current >= 3) {
+        setOnline(false);
+        setSystem(null);
+        setDegraded(false);
+      } else {
+        setDegraded(true);
+      }
     }
   }, []);
 
   React.useEffect(() => {
     if (!online) return;
-    const timer = window.setInterval(refresh, 20000);
+    const timer = window.setInterval(refresh, 30000);
     return () => window.clearInterval(timer);
   }, [online, refresh]);
 
@@ -117,14 +130,16 @@ function App() {
           ))}
         </nav>
         <div className="sidebar-bottom">
-          <span className={`status-dot ${online ? "good" : ""}`} />
+          <span className={`status-dot ${online ? (degraded ? "warn" : "good") : ""}`} />
           <div>
-            <div>{online ? "Worker connected" : "Worker offline"}</div>
+            <div>{online ? (degraded ? "Worker busy" : "Worker connected") : "Worker offline"}</div>
             <div className="muted small">
               {online
-                ? engineReady
-                  ? "Seed-VC ready"
-                  : "Seed-VC idle"
+                ? degraded
+                  ? "retrying…"
+                  : engineReady
+                    ? "Seed-VC ready"
+                    : "Seed-VC idle"
                 : server.host || "not configured"}
             </div>
           </div>
