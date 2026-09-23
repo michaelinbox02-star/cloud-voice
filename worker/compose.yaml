@@ -16,5 +16,17 @@ services:
       timeout: 5s
       retries: 4
 
+  seed:
+    build:
+      context: ./seed
+    restart: unless-stopped
+    gpus: all
+    env_file:
+      - ../.env
+    volumes:
+      - voice_data:/data
+      - seed_checkpoints:/opt/seed-vc/checkpoints
+
 volumes:
   voice_data:
+  seed_checkpoints:

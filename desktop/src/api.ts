@@ -1,0 +1,107 @@
+import { invoke } from "@tauri-apps/api/core";
+
+export type ServerInput = {
+  host: string;
+  port: number;
+  username: string;
+  keyPath: string;
+  repository: string;
+};
+
+export type ServerResult = { log: string; release: string | null };
+
+export type Gpu = {
+  name: string;
+  driver: string;
+  memory_total_mib: string;
+  memory_used_mib: string;
+};
+
+export type Disk = { total_gib: number; used_gib: number; free_gib: number };
+
+export type EngineHealth = {
+  status: string;
+  models_loaded?: boolean;
+  device?: string;
+  detail?: string;
+  model_load_seconds?: number | null;
+};
+
+export type SystemInfo = {
+  gpus: Gpu[];
+  disk: Disk;
+  engines: Record<string, EngineHealth>;
+  voices: number;
+};
+
+export type Voice = {
+  id: string;
+  name: string;
+  engine: string;
+  description: string | null;
+  language: string | null;
+  reference_audio: string | null;
+  settings: Record<string, unknown>;
+  size_bytes: number;
+  created_at: string;
+};
+
+export type JobMetrics = {
+  inference_seconds?: number;
+  audio_seconds?: number;
+  realtime_factor?: number;
+  peak_vram_mib?: number;
+  sample_rate?: number;
+  output_format?: string;
+};
+
+export type JobStatus = "queued" | "running" | "succeeded" | "failed";
+
+export type Job = {
+  id: string;
+  kind: string;
+  status: JobStatus;
+  engine: string;
+  voice_id: string | null;
+  params: Record<string, unknown>;
+  output_path: string | null;
+  error: string | null;
+  progress: number;
+  metrics: JobMetrics;
+  created_at: string;
+  finished_at: string | null;
+};
+
+export type VoiceDraft = {
+  name: string;
+  engine: string;
+  description?: string;
+  language?: string;
+  settings?: string;
+  referencePath?: string;
+};
+
+export type ConversionDraft = {
+  voiceId: string;
+  engine: string;
+  sourcePath: string;
+  params?: string;
+};
+
+export const probeServer = (input: ServerInput) => invoke<ServerResult>("probe_server", { input });
+export const deployServer = (input: ServerInput) => invoke<ServerResult>("deploy_server", { input });
+export const connectWorker = (input: ServerInput) => invoke<SystemInfo>("connect_worker", { input });
+export const disconnectWorker = () => invoke<void>("disconnect_worker");
+export const workerSystem = () => invoke<SystemInfo>("worker_system");
+export const listVoices = () => invoke<{ voices: Voice[] }>("list_voices");
+export const createVoice = (draft: VoiceDraft) => invoke<Voice>("create_voice", { draft });
+export const deleteVoice = (voiceId: string) => invoke<{ deleted: string }>("delete_voice", { voiceId });
+export const listJobs = (limit = 25) => invoke<{ jobs: Job[] }>("list_jobs", { limit });
+export const getJob = (jobId: string) => invoke<Job>("get_job", { jobId });
+export const startConversion = (draft: ConversionDraft) => invoke<Job>("start_conversion", { draft });
+export const workerDownload = (path: string, destinationPath: string) =>
+  invoke<string>("worker_download", { path, destinationPath });
+export const workerFetchArtifact = (path: string, fileName: string) =>
+  invoke<string>("worker_fetch_artifact", { path, fileName });
+export const stagePreview = (sourcePath: string) => invoke<string>("stage_preview", { sourcePath });
+export const revealPath = (path: string) => invoke<void>("reveal_path", { path });

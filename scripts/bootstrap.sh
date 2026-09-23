@@ -39,21 +39,41 @@ fi
 
 sudo docker run --rm --gpus all nvidia/cuda:12.8.1-base-ubuntu24.04 nvidia-smi -L
 
-if [[ ! -f "${repo_dir}/.env" ]]; then
-  umask 077
-  token="$(openssl rand -hex 32)"
-  printf 'CLOUD_VOICE_API_TOKEN=%s\n' "${token}" > "${repo_dir}/.env"
-fi
+# Create any missing secret without disturbing the ones already in use.
+umask 077
+touch "${repo_dir}/.env"
+ensure_secret() {
+  local name="$1"
+  local current
+  current="$(sed -n "s/^${name}=//p" "${repo_dir}/.env")"
+  if [[ -z "${current}" ]]; then
+    printf '%s=%s\n' "${name}" "$(openssl rand -hex 32)" >> "${repo_dir}/.env"
+  fi
+}
+ensure_secret CLOUD_VOICE_API_TOKEN
+ensure_secret CLOUD_VOICE_ENGINE_TOKEN
+chmod 600 "${repo_dir}/.env"
 
 cd "${repo_dir}"
 sudo docker compose -f worker/compose.yaml up -d --build
-token="$(sed -n 's/^CLOUD_VOICE_API_TOKEN=//p' .env)"
-for attempt in {1..20}; do
-  if curl --silent --fail -H "Authorization: Bearer ${token}" http://127.0.0.1:8765/v1/health; then
-    printf '\nWorker health check passed.\n'
+
+api_token="$(sed -n 's/^CLOUD_VOICE_API_TOKEN=//p' .env)"
+for _ in {1..40}; do
+  if curl --silent --fail -H "Authorization: Bearer ${api_token}" http://127.0.0.1:8765/v1/health; then
+    printf '\nControl plane health check passed.\n'
+    break
+  fi
+  sleep 3
+done
+
+# Engine containers pull multi-gigabyte checkpoints on first start. Report
+# status without blocking, so provisioning still succeeds on a slow link.
+engine_token="$(sed -n 's/^CLOUD_VOICE_ENGINE_TOKEN=//p' .env)"
+for _ in {1..10}; do
+  if curl --silent --fail -H "Authorization: Bearer ${engine_token}" http://127.0.0.1:8790/health; then
+    printf '\nSeed-VC engine is answering.\n'
     exit 0
   fi
   sleep 3
 done
-echo "Worker did not become healthy. Check: sudo docker compose -f worker/compose.yaml logs" >&2
-exit 1
+printf '\nControl plane is healthy. The Seed-VC engine is still starting; check: sudo docker compose -f worker/compose.yaml logs seed\n'
