@@ -507,6 +507,7 @@ def create_training(
         archive.unlink(missing_ok=True)
     except zipfile.BadZipFile as error:
         raise HTTPException(status_code=400, detail=f"Dataset archive is not a valid zip: {error}") from error
+    jobs.submit(job["id"])
     return db.get_job(job["id"])  # type: ignore[return-value]
 
 

@@ -206,7 +206,16 @@ def _run_training(job: dict, params: dict) -> dict:
 
 
 def submit(job_id: str) -> None:
-    _executor.submit(run_job, job_id)
+    future = _executor.submit(run_job, job_id)
+
+    def report(completed) -> None:
+        # Without this, an exception raised before run_job's own guard would sit
+        # in the future and the job would wait forever with no explanation.
+        error = completed.exception()
+        if error is not None:
+            _update(job_id, status="failed", error=f"{type(error).__name__}: {error}"[:2000], finished_at=db.now())
+
+    future.add_done_callback(report)
 
 
 def submit_conversion(job_id: str) -> None:
