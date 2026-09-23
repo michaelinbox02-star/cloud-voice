@@ -27,10 +27,10 @@ fi
 work="$(mktemp -d)"
 trap 'rm -rf "${work}"' EXIT
 
-# The reference and source clips ship inside the engine image.
-"${docker_cmd[@]}" run --rm -v "${work}":/host cloud-voice-seed:dev sh -c \
+# The reference and source clips ship inside the engine image. Run as the
+# current user so the extracted files stay readable and removable.
+"${docker_cmd[@]}" run --rm --user "$(id -u):$(id -g)" -v "${work}":/host cloud-voice-seed:dev sh -c \
   'cp examples/reference/s1p1.wav /host/reference.wav && cp examples/source/source_s1.wav /host/source.wav'
-chmod 644 "${work}"/*.wav
 
 json_field() {
   python3 -c "import json,sys; print(json.load(sys.stdin)[sys.argv[1]])" "$1"
