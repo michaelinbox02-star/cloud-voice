@@ -16,7 +16,13 @@ const presets: { value: RealtimePreset; label: string; note: string }[] = [
 
 function looksLikeVirtualCable(label: string): boolean {
   const text = label.toLowerCase();
-  return text.includes("cable input") || text.includes("voicemeeter input") || text.includes("virtual cable");
+  // VB-CABLE names its playback side "CABLE Input (VB-Audio Virtual Cable)";
+  // extra cables are "CABLE-A Input"; Voicemeeter uses "Voicemeeter Input".
+  return (
+    /\bcable[- ]?[a-d]?\s*input\b/.test(text) ||
+    /voicemeeter.*input/.test(text) ||
+    text.includes("virtual cable")
+  );
 }
 
 export function RealtimePage({ online }: Props) {
@@ -35,6 +41,7 @@ export function RealtimePage({ online }: Props) {
   const [stats, setStats] = useState<RealtimeStats | null>(null);
   const [blockSeconds, setBlockSeconds] = useState<number | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
+  const [micAccess, setMicAccess] = useState<"unknown" | "granted" | "denied">("unknown");
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localRef = useRef<MediaStream | null>(null);
@@ -77,10 +84,27 @@ export function RealtimePage({ online }: Props) {
 
   useEffect(() => {
     if (!online) return;
-    navigator.mediaDevices
-      ?.enumerateDevices()
-      .then(() => refreshDevices())
-      .catch(() => undefined);
+
+    // Windows withholds device names until the app holds microphone permission,
+    // which makes the virtual cable impossible to identify. Ask once, then
+    // re-enumerate so the list is readable.
+    const unlock = async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((track) => track.stop());
+        setMicAccess("granted");
+      } catch {
+        setMicAccess("denied");
+      }
+      await refreshDevices().catch(() => undefined);
+    };
+    void unlock();
+
+    const onDeviceChange = () => {
+      void refreshDevices().catch(() => undefined);
+    };
+    navigator.mediaDevices?.addEventListener("devicechange", onDeviceChange);
+    return () => navigator.mediaDevices?.removeEventListener("devicechange", onDeviceChange);
   }, [online]);
 
   useEffect(() => {
@@ -208,6 +232,8 @@ export function RealtimePage({ online }: Props) {
   }, [stats, blockSeconds]);
 
   const uptime = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : 0;
+  const labelsHidden = outputs.length > 0 && outputs.every((device) => device.label === "Output");
+  const cableDetected = outputs.some((device) => looksLikeVirtualCable(device.label));
 
   if (!online) {
     return (
@@ -261,6 +287,40 @@ export function RealtimePage({ online }: Props) {
             ))}
           </select>
         </label>
+
+        <div className="actions left">
+          <button className="secondary" onClick={() => void refreshDevices()}>
+            Refresh devices
+          </button>
+        </div>
+
+        {micAccess === "denied" && (
+          <div className="result bad">
+            <span className="result-indicator" />
+            <span>
+              Windows is blocking microphone access, which also hides device names. Open Settings → Privacy &amp;
+              security → Microphone, turn on microphone access for desktop apps, then reopen this page.
+            </span>
+          </div>
+        )}
+        {micAccess !== "denied" && labelsHidden && (
+          <div className="result">
+            <span className="result-indicator" />
+            <span>
+              Device names are hidden until microphone access is granted. Click Refresh devices; if names stay blank,
+              allow microphone access for desktop apps in Windows privacy settings.
+            </span>
+          </div>
+        )}
+        {micAccess !== "denied" && !labelsHidden && !cableDetected && outputs.length > 0 && (
+          <div className="result">
+            <span className="result-indicator" />
+            <span>
+              No VB-CABLE or Voicemeeter output was found among {outputs.length} playback devices. If you just
+              installed it, reboot so Windows registers the driver, then click Refresh devices.
+            </span>
+          </div>
+        )}
 
         <label className="checkbox">
           <input type="checkbox" checked={monitor} onChange={(event) => setMonitor(event.target.checked)} />

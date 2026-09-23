@@ -247,6 +247,7 @@ select[multiple] { height: auto; }
 button { cursor: pointer; }
 
 .actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 18px; }
+.actions.left { justify-content: flex-start; margin-top: 2px; margin-bottom: 14px; }
 
 .primary, .secondary {
   height: 32px;
