@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import shutil
 import subprocess
 import time
@@ -68,11 +69,55 @@ def run(command: list[str], timeout: int = 7200) -> tuple[str, float]:
     output = (result.stdout or "") + (result.stderr or "")
     if result.returncode != 0:
         tail = "\n".join(output.strip().splitlines()[-12:])
+        label = command[2] if len(command) > 2 and command[1] == "-m" else " ".join(command[:2])
         raise HTTPException(
             status_code=500,
-            detail=f"{' '.join(command[:2])} failed ({result.returncode}):\n{tail}",
+            detail=f"{label} failed ({result.returncode}):\n{tail}",
         )
     return output, elapsed
+
+
+def build_filelist(log_dir: Path, sample_rate: str, f0: bool, speaker_id: int = 0) -> int:
+    """Write the manifest train.py reads, mirroring the WebUI's own layout.
+
+    Each row is: ground-truth wav, content features, optional pitch tracks, and
+    the speaker id. The WebUI builds this in memory and never writes it for a
+    CLI run, so a pure CLI training run has to reproduce it.
+    """
+    gt = log_dir / "0_gt_wavs"
+    features = log_dir / "3_feature768"
+    f0_dir = log_dir / "2a_f0"
+    f0_nsf = log_dir / "2b-f0nsf"
+    mute_root = Path("/opt/rvc/logs/mute")
+
+    names = sorted(path.stem for path in gt.glob("*.wav") if path.stem != "mute")
+    if not names:
+        raise HTTPException(status_code=500, detail="Preprocessing produced no audio slices")
+
+    rows: list[str] = []
+    for name in names:
+        if f0:
+            rows.append(
+                f"{gt}/{name}.wav|{features}/{name}.npy|{f0_dir}/{name}.wav.npy|{f0_nsf}/{name}.wav.npy|{speaker_id}"
+            )
+        else:
+            rows.append(f"{gt}/{name}.wav|{features}/{name}.npy|{speaker_id}")
+
+    # Two silence rows keep the model from over-fitting breath noise.
+    for _ in range(2):
+        if f0:
+            rows.append(
+                f"{mute_root}/0_gt_wavs/mute{sample_rate}.wav|{mute_root}/3_feature768/mute.npy"
+                f"|{mute_root}/2a_f0/mute.wav.npy|{mute_root}/2b-f0nsf/mute.wav.npy|{speaker_id}"
+            )
+        else:
+            rows.append(
+                f"{mute_root}/0_gt_wavs/mute{sample_rate}.wav|{mute_root}/3_feature768/mute.npy|{speaker_id}"
+            )
+
+    random.shuffle(rows)
+    (log_dir / "filelist.txt").write_text("\n".join(rows))
+    return len(names)
 
 
 class ConvertRequest(BaseModel):
@@ -225,6 +270,9 @@ def train(request: TrainRequest) -> dict:
     config = json.loads(template_path.read_text())
     config.pop("speaker_info", None)
     (log_dir / "config.json").write_text(json.dumps(config, ensure_ascii=False, indent=4, sort_keys=True) + "\n")
+
+    slices = build_filelist(log_dir, request.sample_rate_option, request.f0)
+    steps.append({"step": "filelist", "slices": slices})
 
     pretrained = "/opt/rvc/assets/pretrained_v2/f0G40k.pth" if request.f0 else "/opt/rvc/assets/pretrained_v2/G40k.pth"
 
