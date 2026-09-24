@@ -26,7 +26,9 @@ RUN git clone https://github.com/jiaheguo521/seed-vc-realtime.git /opt/seed-vc-r
     && git checkout --detach "${REALTIME_REVISION}" \
     && rm -rf /opt/seed-vc-realtime/.git
 
-COPY engine.py service.py /opt/seed-vc-realtime/
+COPY engine.py service.py patch_upstream.py short_utterance_test.py /opt/seed-vc-realtime/
+RUN python /opt/seed-vc-realtime/patch_upstream.py \
+    && rm /opt/seed-vc-realtime/patch_upstream.py
 
 WORKDIR /opt/seed-vc-realtime
 EXPOSE 8791

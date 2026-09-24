@@ -18,9 +18,9 @@ import torch
 import realtime_vc_engine as upstream
 
 PRESETS = {
-    "low-latency": {"block_time": 0.12, "diffusion_steps": 6, "extra_time_ce": 1.5, "extra_time": 0.3},
-    "balanced": {"block_time": 0.25, "diffusion_steps": 8, "extra_time_ce": 2.5, "extra_time": 0.5},
-    "quality": {"block_time": 0.4, "diffusion_steps": 12, "extra_time_ce": 3.0, "extra_time": 0.6},
+    "low-latency": {"block_time": 0.12, "diffusion_steps": 5, "extra_time_ce": 1.5, "extra_time": 0.3, "extra_time_right": 0.12},
+    "balanced": {"block_time": 0.24, "diffusion_steps": 8, "extra_time_ce": 2.5, "extra_time": 0.5, "extra_time_right": 0.24},
+    "quality": {"block_time": 0.4, "diffusion_steps": 12, "extra_time_ce": 3.0, "extra_time": 0.6, "extra_time_right": 0.4},
 }
 
 
@@ -88,6 +88,7 @@ class StreamingConverter:
             inference_cfg_rate=inference_cfg_rate,
             extra_time_ce=settings["extra_time_ce"],
             extra_time=settings["extra_time"],
+            extra_time_right=settings["extra_time_right"],
             sr_type="sr_model",
             function="vc",
         )

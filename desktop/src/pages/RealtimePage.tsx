@@ -36,10 +36,12 @@ export function RealtimePage({ online }: Props) {
   const [monitorId, setMonitorId] = useState("");
   const [monitor, setMonitor] = useState(true);
   const [live, setLive] = useState(false);
+  const [finishing, setFinishing] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [stats, setStats] = useState<RealtimeStats | null>(null);
   const [blockSeconds, setBlockSeconds] = useState<number | null>(null);
+  const [lookaheadSeconds, setLookaheadSeconds] = useState<number | null>(null);
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [micAccess, setMicAccess] = useState<"unknown" | "granted" | "denied">("unknown");
   const [linkState, setLinkState] = useState<string>("idle");
@@ -130,7 +132,15 @@ export function RealtimePage({ online }: Props) {
     }
   }, [monitorId, live, monitor]);
 
-  const stop = async () => {
+  const stop = async (drain = false) => {
+    if (drain && sessionRef.current && pcRef.current?.connectionState === "connected") {
+      // Keep the WebRTC track alive with silence long enough for the final word
+      // to cross the model's right context and the remote playout buffer.
+      setFinishing(true);
+      localRef.current?.getAudioTracks().forEach((track) => { track.enabled = false; });
+      const drainMs = Math.max(700, Math.ceil(((blockSeconds ?? 0.12) + (lookaheadSeconds ?? 0.12) + 0.5) * 1000));
+      await new Promise<void>((resolve) => window.setTimeout(resolve, drainMs));
+    }
     if (pollRef.current) {
       window.clearInterval(pollRef.current);
       pollRef.current = null;
@@ -144,6 +154,8 @@ export function RealtimePage({ online }: Props) {
     setLive(false);
     setLinkState("idle");
     setStats(null);
+    setBlockSeconds(null);
+    setLookaheadSeconds(null);
     setStartedAt(null);
     if (session) {
       try {
@@ -152,6 +164,7 @@ export function RealtimePage({ online }: Props) {
         // The tunnel may already be gone; nothing useful to surface here.
       }
     }
+    setFinishing(false);
   };
 
   const start = async () => {
@@ -226,6 +239,7 @@ export function RealtimePage({ online }: Props) {
       );
       await pc.setRemoteDescription({ sdp: answer.sdp, type: answer.type });
       setBlockSeconds(answer.block_seconds);
+      setLookaheadSeconds(answer.lookahead_seconds ?? answer.block_seconds);
       setLive(true);
       setStartedAt(Date.now());
 
@@ -258,10 +272,10 @@ export function RealtimePage({ online }: Props) {
   };
 
   const estimatedLatency = useMemo(() => {
-    if (!stats?.inference_ms_mean || !blockSeconds) return null;
-    // Two blocks of pipeline priming, one inference, plus a nominal network leg.
-    return Math.round(blockSeconds * 2 * 1000 + stats.inference_ms_mean + 120);
-  }, [stats, blockSeconds]);
+    if (!stats?.inference_ms_mean || !blockSeconds || lookaheadSeconds === null) return null;
+    // Input collection, model right context, inference, and a nominal network leg.
+    return Math.round((blockSeconds + lookaheadSeconds) * 1000 + stats.inference_ms_mean + 120);
+  }, [stats, blockSeconds, lookaheadSeconds]);
 
   const uptime = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : 0;
   const labelsHidden = outputs.length > 0 && outputs.every((device) => device.label === "Output");
@@ -409,8 +423,8 @@ export function RealtimePage({ online }: Props) {
         </div>
         <div className="actions">
           {live ? (
-            <button className="secondary" onClick={() => void stop()}>
-              Stop
+            <button className="secondary" disabled={finishing} onClick={() => void stop(true)}>
+              {finishing ? "Finishing last words…" : "Stop"}
             </button>
           ) : (
             <button className="primary" disabled={busy || !voiceId} onClick={() => void start()}>
@@ -451,7 +465,7 @@ export function RealtimePage({ online }: Props) {
               <div className="stat">
                 <span className="stat-label">Block size</span>
                 <span className="stat-value">{blockSeconds ? `${(blockSeconds * 1000).toFixed(0)} ms` : "—"}</span>
-                <span className="stat-note">pipeline primes two blocks</span>
+                <span className="stat-note">model keeps {lookaheadSeconds ? `${(lookaheadSeconds * 1000).toFixed(0)} ms` : "—"} of right context</span>
               </div>
               <div className="stat">
                 <span className="stat-label">Estimated latency</span>

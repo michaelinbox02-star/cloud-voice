@@ -130,6 +130,7 @@ export type RealtimeAnswer = {
   type: RTCSdpType;
   model_rate: number;
   block_seconds: number;
+  lookahead_seconds?: number;
   output_sample_rate: number;
 };
 

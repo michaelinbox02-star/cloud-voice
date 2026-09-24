@@ -14,6 +14,10 @@ type Settings = {
   similarity_cfg_rate: number;
   intelligibility_cfg_rate: number;
   length_adjust: number;
+  pitch: number;
+  f0_method: "rmvpe" | "pm";
+  index_rate: number;
+  protect: number;
   output_format: "wav" | "flac" | "mp3";
 };
 
@@ -22,6 +26,10 @@ const defaults: Settings = {
   similarity_cfg_rate: 0.7,
   intelligibility_cfg_rate: 0.7,
   length_adjust: 1.0,
+  pitch: 0,
+  f0_method: "rmvpe",
+  index_rate: 0.75,
+  protect: 0.33,
   output_format: "wav",
 };
 
@@ -44,14 +52,16 @@ export function VoiceToVoicePage({ online }: Props) {
     }
     listVoices()
       .then((result) => {
-        setVoices(result.voices.filter((voice) => voice.engine === "seed-vc"));
-        if (result.voices.length > 0) setVoiceId((current) => current || result.voices[0].id);
+        const convertible = result.voices.filter((voice) => voice.engine === "seed-vc" || voice.engine === "rvc");
+        setVoices(convertible);
+        setVoiceId((current) => convertible.some((voice) => voice.id === current) ? current : convertible[0]?.id ?? "");
       })
       .catch((problem) => setError(String(problem)));
   }, [online]);
 
   const jobs = useJobs();
   const job = jobs.find((entry) => entry.kind === "convert");
+  const selectedVoice = voices.find((voice) => voice.id === voiceId);
 
   // Fetch the finished audio once per job, and again after a tab switch.
   useEffect(() => {
@@ -97,17 +107,31 @@ export function VoiceToVoicePage({ online }: Props) {
   };
 
   const convert = async () => {
-    if (!voiceId || !sourcePath) return;
+    if (!selectedVoice || !sourcePath) return;
     setBusy(true);
     setError("");
     setArtifact(null);
     try {
-      const voice = voices.find((entry) => entry.id === voiceId);
+      const params = selectedVoice.engine === "rvc"
+        ? {
+            output_format: settings.output_format,
+            pitch: settings.pitch,
+            f0_method: settings.f0_method,
+            index_rate: settings.index_rate,
+            protect: settings.protect,
+          }
+        : {
+            output_format: settings.output_format,
+            diffusion_steps: settings.diffusion_steps,
+            similarity_cfg_rate: settings.similarity_cfg_rate,
+            intelligibility_cfg_rate: settings.intelligibility_cfg_rate,
+            length_adjust: settings.length_adjust,
+          };
       const created = await startConversion({
         voiceId,
-        engine: voice?.engine ?? "seed-vc",
+        engine: selectedVoice.engine,
         sourcePath,
-        params: JSON.stringify(settings),
+        params: JSON.stringify(params),
       });
       trackJob(created);
     } catch (problem) {
@@ -173,7 +197,7 @@ export function VoiceToVoicePage({ online }: Props) {
             <span className="step">2</span>
             <div>
               <h2>Target voice</h2>
-              <p>{voices.length === 0 ? "Create a voice first." : `${voices.length} Seed-VC voice${voices.length === 1 ? "" : "s"} available.`}</p>
+              <p>{voices.length === 0 ? "Create or import a voice first." : `${voices.length} voice${voices.length === 1 ? "" : "s"} available.`}</p>
             </div>
           </div>
           <select value={voiceId} onChange={(event) => setVoiceId(event.target.value)} disabled={voices.length === 0}>
@@ -203,6 +227,48 @@ export function VoiceToVoicePage({ online }: Props) {
           </button>
           {advanced && (
             <div className="advanced">
+              {selectedVoice?.engine === "rvc" ? (
+                <>
+                  <Slider
+                    label="Pitch shift"
+                    hint="Semitones; use 0 to preserve pitch"
+                    min={-24}
+                    max={24}
+                    step={1}
+                    value={settings.pitch}
+                    onChange={(value) => setSettings({ ...settings, pitch: value })}
+                  />
+                  <label>
+                    Pitch detection
+                    <select
+                      value={settings.f0_method}
+                      onChange={(event) => setSettings({ ...settings, f0_method: event.target.value as Settings["f0_method"] })}
+                    >
+                      <option value="rmvpe">RMVPE</option>
+                      <option value="pm">PM</option>
+                    </select>
+                  </label>
+                  <Slider
+                    label="Index influence"
+                    hint="How strongly to use the trained voice index"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={settings.index_rate}
+                    onChange={(value) => setSettings({ ...settings, index_rate: value })}
+                  />
+                  <Slider
+                    label="Consonant protection"
+                    hint="Protect quieter consonants from over-conversion"
+                    min={0}
+                    max={0.5}
+                    step={0.01}
+                    value={settings.protect}
+                    onChange={(value) => setSettings({ ...settings, protect: value })}
+                  />
+                </>
+              ) : (
+                <>
               <Slider
                 label="Diffusion steps"
                 hint="Quality against speed"
@@ -239,11 +305,13 @@ export function VoiceToVoicePage({ online }: Props) {
                 value={settings.length_adjust}
                 onChange={(value) => setSettings({ ...settings, length_adjust: value })}
               />
+                </>
+              )}
             </div>
           )}
 
           <div className="actions">
-            <button className="primary" disabled={busy || running || !voiceId || !sourcePath} onClick={convert}>
+            <button className="primary" disabled={busy || running || !selectedVoice || !sourcePath} onClick={convert}>
               {running ? "Converting…" : busy ? "Starting…" : "Convert"}
             </button>
           </div>

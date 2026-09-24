@@ -229,6 +229,7 @@ class Runtime:
             "model_rate": self.converter.sample_rate,
             "block_samples": self.converter.block_frame,
             "block_seconds": round(self.converter.block_seconds, 4),
+            "lookahead_seconds": self.converter.settings["extra_time_right"],
         }
 
 
@@ -423,6 +424,7 @@ async def offer(request: OfferRequest) -> dict:
             "type": pc.localDescription.type,
             "model_rate": converter.sample_rate,
             "block_seconds": round(converter.block_seconds, 4),
+            "lookahead_seconds": converter.settings["extra_time_right"],
             "output_sample_rate": OUTPUT_RATE,
         }
     except Exception:
