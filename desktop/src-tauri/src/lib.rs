@@ -16,7 +16,7 @@ use tauri::Manager;
 use worker::{Connection, Tunnel};
 
 /// Worker revision the installer checks out. Bump after every worker change.
-const WORKER_RELEASE: &str = "3895df2eaca99f4afdc1a11c41f1ad608b8d5026";
+const WORKER_RELEASE: &str = "5bc28307b7c6d295c33c9031b8c3473b3f7e9c9c";
 
 const KEYRING_SERVICE: &str = "cloud-voice-studio";
 
