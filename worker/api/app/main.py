@@ -295,11 +295,8 @@ def create_conversion(
     voice = db.get_voice(voice_id)
     if voice is None:
         raise HTTPException(status_code=404, detail="Voice not found.")
-    if engine.strip().lower() != voice["engine"]:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Voice '{voice['name']}' was created for {voice['engine']}, not {engine}.",
-        )
+    # The stored voice is authoritative. Older desktop builds can submit their
+    # default engine even after a user selects an RVC voice.
     try:
         parsed = json.loads(params) if params else {}
     except json.JSONDecodeError as error:
