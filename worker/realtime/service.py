@@ -36,6 +36,57 @@ os.chdir("/opt/seed-vc-realtime")
 DATA_ROOT = Path(os.environ.get("CLOUD_VOICE_DATA_ROOT", "/data")).resolve()
 TICKET_DIR = DATA_ROOT / "realtime-sessions"
 
+# A rented GPU usually sits behind the provider's NAT, so it cannot receive
+# inbound UDP and ICE has no candidate pair to try. A relay fixes that: both
+# ends connect outward to a public address rather than to each other. These
+# defaults point at a free public relay so realtime works out of the box; set
+# the three environment variables to use your own coturn instead.
+DEFAULT_TURN_URLS = (
+    "turn:openrelay.metered.ca:80,"
+    "turn:openrelay.metered.ca:443,"
+    "turns:openrelay.metered.ca:443"
+)
+DEFAULT_TURN_USERNAME = "openrelayproject"
+DEFAULT_TURN_CREDENTIAL = "openrelayproject"
+STUN_URLS = ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]
+
+
+def ice_servers() -> list[dict]:
+    """ICE configuration shared by the worker and the desktop.
+
+    Exposed through `/health` so both peers negotiate with the same relays
+    instead of one side guessing.
+    """
+    servers: list[dict] = [{"urls": STUN_URLS}]
+    urls = [
+        url.strip()
+        for url in os.environ.get("CLOUD_VOICE_TURN_URLS", DEFAULT_TURN_URLS).split(",")
+        if url.strip()
+    ]
+    if urls:
+        servers.append(
+            {
+                "urls": urls,
+                "username": os.environ.get("CLOUD_VOICE_TURN_USERNAME", DEFAULT_TURN_USERNAME),
+                "credential": os.environ.get("CLOUD_VOICE_TURN_CREDENTIAL", DEFAULT_TURN_CREDENTIAL),
+            }
+        )
+    return servers
+
+
+def rtc_configuration() -> RTCConfiguration:
+    return RTCConfiguration(
+        iceServers=[
+            RTCIceServer(
+                urls=server["urls"],
+                username=server.get("username"),
+                credential=server.get("credential"),
+            )
+            for server in ice_servers()
+        ]
+    )
+
+
 OUTPUT_RATE = 48000
 OUTPUT_FRAME_SAMPLES = 960  # 20 ms of Opus
 MAX_QUEUED_FRAMES = 40
@@ -407,6 +458,7 @@ def health() -> dict:
         "status": _warm_state["status"],
         "detail": _warm_state["detail"],
         "inbound_media": media_reachability(),
+        "ice_servers": ice_servers(),
         "runtime": runtime.status(),
         "active_session": active.id if active else None,
         "state": active.state if active else "idle",
@@ -433,7 +485,7 @@ async def offer(request: OfferRequest) -> dict:
         raise
 
     pc = RTCPeerConnection(
-        RTCConfiguration(iceServers=[RTCIceServer(urls=["stun:stun.l.google.com:19302"])])
+        rtc_configuration()
     )
     session = LiveSession(request.session_id, ticket, lease)
     session.pc = pc

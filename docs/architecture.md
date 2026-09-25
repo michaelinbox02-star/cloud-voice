@@ -59,6 +59,38 @@ GPU host and persist across container recreation.
 
 ### Realtime engine (`worker/realtime/`)
 
+#### Realtime transport and NAT
+
+A rented GPU is usually behind the provider's NAT, so it cannot receive inbound
+UDP and ICE has no candidate pair to try. Three transports exist, in order of
+quality:
+
+1. **Direct WebRTC** — requires a public IP on the worker. Lowest latency.
+2. **WebRTC through a relay (TURN)** — works behind NAT because both peers
+   connect outbound to a public relay. Slightly higher latency than direct.
+3. **Tunnel over SSH** — always works, but it is TCP, so it pays an extra round
+   trip and head-of-line blocking.
+
+The worker publishes its ICE configuration through `/health` so both peers
+negotiate with the same servers. Configure a relay in `.env`:
+
+```
+CLOUD_VOICE_TURN_URLS=turn:your-relay.example.com:3478
+CLOUD_VOICE_TURN_USERNAME=cloudvoice
+CLOUD_VOICE_TURN_CREDENTIAL=<secret>
+```
+
+Notes learned the hard way:
+
+- aiortc supports TURN over **UDP and TCP**, but not TURN over TLS, so a
+  `turns:` URL will not be used by the worker.
+- The relay must be reachable from *both* the worker and the desktop.
+- Free anonymous relays are effectively gone; expect to run coturn on a small
+  public VPS, or use a hosted service with an account.
+- The defaults in `worker/realtime/service.py` point at a public free relay.
+  It answers but rejects allocations, so a relay must be configured before
+  WebRTC can be used on a NATed worker.
+
 The Seed-VC realtime fork drives its pipeline from a PortAudio callback. Here
 the transport is WebRTC instead: `engine.py` feeds the same `_process_block`
 pipeline from network audio, one block in and one block out.

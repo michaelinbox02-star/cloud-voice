@@ -59,6 +59,7 @@ export function RealtimePage({ online }: Props) {
   const [linkState, setLinkState] = useState<string>("idle");
   const [transport, setTransport] = useState<Transport>("auto");
   const [inboundMedia, setInboundMedia] = useState<string>("unknown");
+  const [iceServers, setIceServers] = useState<RTCIceServer[]>([]);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localRef = useRef<MediaStream | null>(null);
@@ -147,9 +148,23 @@ export function RealtimePage({ online }: Props) {
   useEffect(() => {
     if (!online) return;
     realtimeHealth()
-      .then((health) => setInboundMedia(String(health.inbound_media ?? "unknown")))
+      .then((health) => {
+        setInboundMedia(String(health.inbound_media ?? "unknown"));
+        // The worker publishes the relays it will use, so both peers negotiate
+        // with the same TURN servers instead of one side guessing.
+        const servers = Array.isArray(health.ice_servers)
+          ? (health.ice_servers as RTCIceServer[])
+          : [];
+        setIceServers(servers);
+      })
       .catch(() => setInboundMedia("unknown"));
   }, [online]);
+
+  const hasRelay = iceServers.some((server) =>
+    (Array.isArray(server.urls) ? server.urls : [server.urls]).some((url) =>
+      String(url).toLowerCase().startsWith("turn"),
+    ),
+  );
 
   // Send the converted stream to the virtual cable and the monitor copy to the
   // user's own headphones. setSinkId is Chromium-only, which WebView2 provides.
@@ -355,23 +370,26 @@ export function RealtimePage({ online }: Props) {
       // Direct WebRTC needs a publicly reachable UDP path to the worker. Behind
       // NAT there is none, so the tunnel is the only transport that can carry
       // audio; the choice follows the worker's own reachability report.
+      // Direct WebRTC needs a reachable UDP path. When the worker is behind NAT a
+      // relay supplies one, so WebRTC still wins on a NATed host as long as TURN
+      // is configured. The tunnel remains the last resort.
       const useTunnel =
-        transport === "tunnel" || (transport === "auto" && inboundMedia !== "direct");
+        transport === "tunnel" ||
+        (transport === "auto" && inboundMedia !== "direct" && !hasRelay);
       if (useTunnel) {
         await startTunnel(ticket, stream);
         return;
       }
 
-      // The worker gathers its own candidates, but the desktop has to produce
-      // usable ones too. Chromium normally hides local addresses behind mDNS
-      // `.local` names, which aiortc cannot resolve, so ICE never completes and
-      // the server sits waiting for audio that never arrives. STUN gives both
-      // sides a routable address to try.
+      // Chromium normally hides local addresses behind mDNS `.local` names, which
+      // aiortc cannot resolve. STUN and TURN give both sides routable addresses.
       const pc = new RTCPeerConnection({
-        iceServers: [
-          { urls: "stun:stun.l.google.com:19302" },
-          { urls: "stun:stun1.l.google.com:19302" },
-        ],
+        iceServers: iceServers.length
+          ? iceServers
+          : [
+              { urls: "stun:stun.l.google.com:19302" },
+              { urls: "stun:stun1.l.google.com:19302" },
+            ],
       });
       pcRef.current = pc;
       setLinkState("connecting");
@@ -557,7 +575,9 @@ export function RealtimePage({ online }: Props) {
           <div className="result">
             <span className="result-indicator" />
             <span>
-              This worker sits behind NAT, so audio is carried through the SSH tunnel. Direct WebRTC cannot reach it.
+              {hasRelay
+                ? "This worker sits behind NAT. Audio goes over WebRTC through a relay, which is lower latency than the SSH tunnel."
+                : "This worker sits behind NAT and no relay is configured, so audio is carried through the SSH tunnel. Configure TURN to use WebRTC instead."}
             </span>
           </div>
         )}
