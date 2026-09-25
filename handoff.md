@@ -1,84 +1,195 @@
-# Handoff
+# Handoff — Cloud Voice Studio
 
-State as of worker revision `630270b`, desktop `main`.
+Supersedes the 2026-09-24 handoff. Written at repo revision `f0940c3`.
 
-## What is working, and how it was verified
+**No fixes were applied while writing this.** Two live problems are documented
+with evidence and hypotheses so the next agent can verify before changing code.
 
-Everything below was run against the real GPU worker (Tesla V100-SXM3-32GB,
-driver 580.178.04), not simulated.
+## Current state
 
-| Capability | Evidence |
+| Item | Value |
 | --- | --- |
-| Provisioning | `scripts/bootstrap.sh` on a clean Ubuntu 24.04 host installs Docker/NVIDIA runtime, generates credentials, starts all five services and passes health checks |
-| Seed-VC offline | 12.5 s clip converted in 11.0 s, 3.1 GB peak VRAM |
-| Seed-VC realtime over WebRTC | 46 blocks of 240 ms, 158 ms mean inference, **0 dropped frames**, 11.6 s of converted audio returned |
-| RVC v2 training | 27 slices, preprocess → F0 → HuBERT → train → index in ~5 min; produced a 53 MB `.pth` and 13 MB `.index` |
-| RVC v2 inference | 12.46 s of audio in 13.5 s at 40 kHz with the model it had just trained |
-| Kokoro TTS | 4.0 s of speech from 60 characters in 8.1 s warm (CPU), 24.8 s cold while the model downloaded |
-| Backup / restore | 4.0 MB archive exported, restored, 2 voices round-tripped intact |
+| Repository | `https://github.com/michaelinbox02-star/cloud-voice`, branch `main` |
+| Desktop artifact | `desktop/src-tauri/target/release/cloud-voice-studio.exe`, SHA-256 `AB7081966907E1A833F673134E2FC71F1CCFE0D18AC9DD9C48CABD71CB04B3AA` |
+| Installer pin | `WORKER_RELEASE` in `desktop/src-tauri/src/lib.rs` = `3d0d5aa0a6e73e5a8d2adc72627ec54d695705f0` |
+| Worker | `142.112.39.215` (Montréal, 4090, 49 GB RAM, 178 GB disk) |
+| Worker SSH | port **41999** was open at the last check; port **41358** refused. The provider appears to remap ports, so confirm before assuming the box is gone. |
+| Worker checkout | `~/cloud-voice`, detached at the pinned revision |
 
-Listen to the results: `samples/seed-smoke-out.wav`, `samples/seed-smoke-source.wav`,
-`samples/rvc-smoke-out.wav`.
+Secrets are **not** in the repo:
 
-## Where things live
+- Worker secrets live in `~/cloud-voice/.env` on the host (mode 600), including
+  the TURN relay credentials for the Metered account.
+- The Vast.ai API key was stored at `%TEMP%\vast.key` on the desktop machine
+  only. It is not in the repository and not in any config file.
 
-- Desktop client: `desktop/` (Tauri 2 + React). Release binary at
-  `desktop/src-tauri/target/release/cloud-voice-studio.exe`.
-- Control plane: `worker/api/` — voices, jobs, artifacts, TTS, training, backup.
-- Engines, one container each: `worker/seed/` (Seed-VC offline), `worker/realtime/`
-  (Seed-VC streaming over WebRTC), `worker/rvc/` (RVC inference + training),
-  `worker/tts/` (Kokoro).
-- Worker host: `riftuser@66.172.10.245`, checkout in `~/cloud-voice`, deployed at
-  the revision pinned by `WORKER_RELEASE` in `desktop/src-tauri/src/lib.rs`.
-- Secrets: `.env` on the worker (mode 600) and Windows Credential Manager on the
-  desktop. Nothing sensitive is committed.
+## Issue 1 — operations are slower than before
 
-## Verification commands
+Reported as: conversions, TTS and training take noticeably longer than they did
+before the warm-start / lane update.
 
-```bash
-bash scripts/bootstrap.sh                          # provision
-bash scripts/seed-smoke.sh <ssh-target>            # offline Seed-VC
-bash scripts/api-smoke.sh <ssh-target>             # full API round trip
-bash scripts/realtime-smoke.sh <ssh-target>        # streaming pipeline, block by block
-bash scripts/realtime-rtc-smoke.sh <ssh-target>    # WebRTC end to end
-```
+### Evidence gathered
 
-## Known gaps and sharp edges
+- `worker/api/app/jobs.py:133` wraps **every GPU-lane job** in a blocking
+  exclusive lock: `with gpu_lease() if job["lane"] == "gpu" else nullcontext():`
+- `worker/realtime/service.py:477` and `:581` acquire the **same** `GpuLease`
+  for the whole lifetime of a live session, releasing it only in `finally`
+  (`:545`, `:620`).
+- Consequence: **while a realtime session is live, every offline conversion and
+  every training job blocks** until the stream ends. Before this update there was
+  no cross-container lease, so offline work proceeded alongside realtime.
+- The API log shows the desktop polling a job that does not exist:
+  `GET /v1/jobs/job_762086a03bdf4b9b` → **404**, repeatedly, many times a minute.
 
-1. **Nobody has looked at the UI.** It type-checks and the binary launches, but no
-   human or vision tool has confirmed the screens render correctly.
-2. **WebView2 microphone access is unverified on the user's machine.** wry only
-   auto-grants clipboard, so the app now passes
-   `--use-fake-ui-for-media-stream` in `additionalBrowserArgs`. If Go Live still
-   fails with a permission error, the fallback is native capture with `cpal`.
-3. **VB-CABLE must be installed** for realtime routing, and Windows hides device
-   names until the app holds microphone permission. The Realtime page now explains
-   both cases inline.
-4. **No NSIS installer.** `makensis` takes minutes even on an empty script inside
-   the sandbox. Use `npm run app:portable`, or build the installer on a normal
-   machine (`npm run app:build`).
-5. **Realtime is Seed-VC only.** RVC realtime would be lower latency; the RVC
-   repo ships `infer/rtrvc.py` for it but it needs a separate streaming transport
-   and its own session wiring.
-6. **Latency is unmeasured from a real desktop.** The worker is in Los Angeles.
-   Blocking is 2 × block_time plus inference plus one network leg. Expect roughly
-   450–500 ms on the low-latency preset and 700–800 ms on balanced from the East
-   Coast.
-7. **TTS runs on CPU** (~2× realtime for short text). Move it to CUDA or batch
-   sentences if that matters.
-8. **Training dataset upload is a zip.** A folder picker that zips client-side
-   would be friendlier, and progress is coarse (0.1 → 0.85 → 1.0) because the
-   engine only reports per stage.
-9. **One job at a time.** The executor is single-worker by design (one GPU), so a
-   long training run blocks conversions until it finishes.
-10. **RVC training defaults** (200 epochs, batch 8) are untuned for quality; the
-    smoke test used 60 epochs on 27 slices.
+### Hypotheses (verify before changing anything)
 
-## Recommended next steps
+1. **GPU lease contention is the primary cause.** A live realtime session holds
+   the lease, so offline jobs wait. Confirm by starting a conversion while a
+   realtime session is live and observing whether it sits `queued` until the
+   stream stops. If so, the fix is to scope the lease to model access rather than
+   the whole job, or to give realtime a shared/priority lease.
+2. **Stale job polling.** `desktop/src/jobStore.ts` persists jobs to
+   `localStorage` and polls anything still `queued`/`running` every 2.5 s
+   (`POLL_MS`), swallowing errors so a job that no longer exists is retried
+   forever. After moving to a new worker, stale IDs from the previous worker are
+   polled indefinitely — visible as the 404 storm above — and the UI can show a
+   job stuck as running when it is not.
+3. Secondary: `desktop/src/pages/RealtimePage.tsx` polls session stats every
+   1.5 s during a live session, and `GET /v1/system` now probes all three engines
+   per call (the desktop polls it every 30 s).
 
-1. Run the desktop app, walk every page, and fix whatever looks wrong.
-2. Confirm realtime end to end from the desktop: mic → worker → virtual cable →
-   Discord.
-3. Add RVC realtime streaming for lower latency.
-4. Build and publish the NSIS installer on a non-sandboxed machine.
-5. Add per-stage training progress (parse the trainer's stdout for epoch lines).
+### Not yet checked
+
+- Real per-job timings from the database on a healthy worker (`db.list_jobs()`),
+  comparing lane wait time against engine time.
+- Whether the RVC/TTS images were rebuilt recently, which would make their first
+  job slow for unrelated reasons.
+- Whether `worker/rvc` re-downloads assets on each run (commit `3895df2` made RVC
+  wait for assets before inference and training).
+
+## Issue 2 — realtime: "No audio path was established within 25 seconds"
+
+The screenshot shows the Realtime page live, the transport dropdown set to
+**WebRTC — direct, lowest latency**, the relay note displayed, and:
+
+> No audio path was established within 25 seconds. The worker is reachable for
+> control but the media connection did not come up.
+
+Stream health read `Waiting for audio`, `0 blocks · queue 0`, with the link
+indicator connecting or failed. That message is the diagnostic added in this
+update. The session negotiated — the 120 ms block size came back in the answer —
+but no media flowed.
+
+### Evidence gathered
+
+- The worker's realtime log around the failure contains no `[realtime] state=` or
+  `[realtime] streaming started` lines, only repeated
+  `GET /v1/sessions/{id}/stats` polls. No media path was established.
+- The relay itself is **known good**: with the Metered credentials the worker
+  allocates `typ relay` candidates on UDP 80, UDP 443 and TCP 80, verified
+  directly on the worker.
+- So the failure is in ICE negotiation between the desktop and the worker, not in
+  relay availability.
+
+### Hypotheses (verify before changing anything)
+
+1. **The desktop sends its offer before ICE gathering finishes, and nothing is
+   trickled.** `desktop/src/pages/RealtimePage.tsx:418-425` does
+   `createOffer()` → `setLocalDescription()` → immediately reads
+   `pc.localDescription.sdp` and sends it. There is no `onicecandidate` handler
+   forwarding candidates to the worker. The worker therefore receives an offer
+   with no remote candidates and cannot start connectivity checks.
+   **Check:** log the number of `candidate:` lines in the offer the worker
+   receives. If it is zero, this is the cause.
+2. **The worker's answer may lack the relay candidate.** `offer()` in
+   `worker/realtime/service.py` waits for ICE gathering with an approximately
+   8-second deadline. TURN allocation plus gathering can exceed that on a loaded
+   host; if gathering is truncated the answer carries only host/srflx candidates,
+   which a desktop cannot use to reach a NAT'd worker.
+   **Check:** log candidate types in the answer SDP and confirm `typ relay` is
+   present before returning it.
+3. **Race on ICE config.** `iceServers` is populated by a `useEffect` calling
+   `realtimeHealth()`. If the user presses *Go live* before it resolves, the peer
+   connection is built with STUN only. The relay note rendered in the screenshot,
+   so config had arrived — but the race is real and cheap to close.
+
+### What is already verified working
+
+- The relay credentials are valid and the worker allocates relays on them.
+- The worker publishes its ICE configuration through `/health` (`ice_servers`)
+  and reports `inbound_media: tunnel` for this host, correctly detecting NAT.
+- The tunnelled transport was verified earlier on a different host: 14.4 s
+  round-trip with speech intact, and the silence gate produces exact zeros during
+  silence.
+
+## Updates made in this period
+
+1. **Silence gate** (`worker/realtime/engine.py`): the upstream VAD gate had been
+   removed entirely, so the model vocalised babble and repeated syllables during
+   silence. Replaced with a gate whose decision is delayed by `extra_time_right`
+   to match the pipeline's own latency, with a 300 ms hangover and a 20 ms fade.
+   Covered by ten unit tests (`tests/test_silence_gate.py`) and verified on GPU
+   (`silence region rms 0.000000`).
+2. **Shared GPU lock permissions** (`worker/api/app/jobs.py`,
+   `worker/realtime/service.py`): `/data/gpu.lock` was created 0644 by whichever
+   container started first, so the API (uid 10001) hit `Permission denied`. Both
+   sides now force 0666. Verified: a TTS job succeeded afterwards.
+3. **Tunnelled realtime transport** (`worker/realtime/service.py`,
+   `desktop/src/pages/RealtimePage.tsx`): WebSocket audio over the existing SSH
+   tunnel for hosts with no inbound UDP. Verified end to end on a NAT'd host.
+4. **TURN support**: worker and desktop share the ICE configuration published by
+   the worker; transport selection prefers WebRTC when a relay exists and falls
+   back to the tunnel otherwise. Defaults no longer point at the dead anonymous
+   relay.
+5. **Diagnostics**: transport selector, NAT note, link state, gate open/closed
+   indicator, and the 25-second no-audio timeout that produced the screenshot.
+6. **Job store** (`desktop/src/jobStore.ts`): jobs moved out of page state so they
+   survive tab switches. This is also the source of the stale-job polling in
+   Issue 1.
+7. **Branded virtual microphone** (`desktop/src-tauri/src/virtualmic.rs`): renames
+   the VB-CABLE capture endpoint to "Cloud Voice Microphone" through an elevated
+   script, with restore. Verified against the real registry (dry run only;
+   nothing was written).
+
+## Verified vs unverified
+
+**Verified:** silence gate on GPU; relay allocation with the Metered credentials;
+lock permission fix; tunnel transport on a NAT'd host; branded-mic detection and
+dry run on the real machine; provider NAT and UDP behaviour on three hosts.
+
+**Not verified:** a complete live desktop → worker → desktop audio session on any
+host; the acceptance criteria for warm start (first conversion under 20 s after a
+fresh deploy), TTS running during training, and strict GPU serialisation;
+Blackwell (`cu128`) on real hardware — only the selection logic was tested,
+against stubbed hardware.
+
+## Recommended next steps, in order
+
+1. **Do not press "Install on GPU" with an older desktop build.** The installer
+   pin decides which worker revision is deployed; an older build checks the host
+   back to a revision without TURN support and silently rebuilds the realtime
+   container without it. Any change to worker code needs `WORKER_RELEASE` in
+   `desktop/src-tauri/src/lib.rs` bumped in the same commit.
+2. Reproduce Issue 2 with candidate logging on both sides (hypotheses 1 and 2)
+   before changing the ICE flow. The most likely single fix is to finish
+   gathering on the desktop before sending the offer, or to trickle candidates,
+   with a longer gathering deadline on the worker as the companion fix.
+3. Reproduce Issue 1 by timing a conversion with and without a live realtime
+   session, then decide whether the lease should cover the whole job or only
+   model access.
+4. Bound `jobStore.ts` so a job that 404s is dropped rather than polled forever,
+   and clear persisted jobs when the connected host changes.
+5. Only then re-run the outstanding acceptance criteria from
+   `docs/proposed-updates.md` on a healthy worker.
+
+## Access notes
+
+- The desktop SSH key is `C:\Users\USER\.ssh\ai-avatar-gpu`; its public key is
+  registered on the Vast.ai account, so Vast instances receive it automatically.
+  Non-Vast providers may not, in which case key auth fails and the key must be
+  added on their side.
+- Three recent instances (`87.17.211.111`, `85.218.235.6`, `142.112.39.215`) are
+  all behind NAT with a single forwarded port. `ip -4 addr show scope global`
+  showing only `10.x`/`172.16-31.x`/`192.168.x` predicts this before installing.
+- A provider that assigns a real public IP to the instance interface removes the
+  need for both the tunnel and the relay — worth prioritising when renting.
