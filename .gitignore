@@ -31,3 +31,5 @@ datasets/
 backups/
 .smoke/
 .research/
+.driver-src/
+driver/out/
