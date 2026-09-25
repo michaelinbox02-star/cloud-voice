@@ -33,3 +33,4 @@ backups/
 .research/
 .driver-src/
 driver/out/
+.target-alt/
