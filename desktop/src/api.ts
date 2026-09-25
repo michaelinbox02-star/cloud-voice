@@ -123,6 +123,7 @@ export type RealtimeTicket = {
   voice_id: string;
   voice_name: string;
   preset: string;
+  signaling_port: number;
 };
 
 export type RealtimeAnswer = {
@@ -143,6 +144,7 @@ export type RealtimeStats = {
   dropped_frames: number;
   uptime_seconds: number;
   connection_state: string | null;
+  gate_open: boolean | null;
 };
 
 export type RealtimePreset = "low-latency" | "balanced" | "quality";

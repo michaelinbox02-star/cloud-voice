@@ -141,6 +141,7 @@ fn hide_console_window(_: &mut Command) {}
 pub struct Connection {
     base_url: String,
     signaling_url: String,
+    signaling_port: u16,
     token: String,
     client: reqwest::blocking::Client,
     tunnel: Tunnel,
@@ -157,6 +158,7 @@ impl Connection {
         let connection = Connection {
             base_url: format!("http://127.0.0.1:{}", tunnel.api_port),
             signaling_url: format!("http://127.0.0.1:{}", tunnel.signaling_port),
+            signaling_port: tunnel.signaling_port,
             token,
             client,
             tunnel,
@@ -171,6 +173,11 @@ impl Connection {
 
     pub fn is_alive(&self) -> bool {
         self.tunnel.is_alive()
+    }
+
+    /// Loopback port the desktop uses for realtime signalling and tunnelled audio.
+    pub fn signaling_port(&self) -> u16 {
+        self.signaling_port
     }
 
     fn url(&self, path: &str) -> String {

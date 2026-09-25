@@ -17,6 +17,7 @@ import hashlib
 import hmac
 import json
 import os
+import socket
 import time
 from contextlib import asynccontextmanager, suppress
 from fractions import Fraction
@@ -25,7 +26,7 @@ from pathlib import Path
 import av
 import numpy as np
 from aiortc import MediaStreamTrack, RTCConfiguration, RTCIceServer, RTCPeerConnection, RTCSessionDescription
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from engine import StreamingConverter, resample
@@ -160,6 +161,35 @@ def frame_to_mono(frame: av.AudioFrame) -> np.ndarray:
 
 def token_hash(token: str) -> str:
     return hashlib.sha256(token.encode()).hexdigest()
+
+
+def media_reachability() -> str:
+    """Report whether WebRTC media can reach this host directly.
+
+    Rented GPUs are often behind NAT with only SSH forwarded, in which case an
+    inbound UDP connection is impossible and the tunnelled transport is the only
+    one that can work. The address the kernel picks for an outbound route is the
+    cheapest reliable way to tell a public host from a NATed one.
+    """
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect(("8.8.8.8", 80))
+        address = probe.getsockname()[0]
+    except OSError:
+        return "unknown"
+    finally:
+        probe.close()
+    octets = address.split(".")
+    if len(octets) != 4:
+        return "unknown"
+    first, second = int(octets[0]), int(octets[1])
+    is_private = (
+        first == 10
+        or (first == 172 and 16 <= second <= 31)
+        or (first == 192 and second == 168)
+        or first == 127
+    )
+    return "tunnel" if is_private else "direct"
 
 
 def read_ticket(session_id: str, token: str) -> dict:
@@ -348,12 +378,35 @@ class LiveSession:
                     )
                 self.track.push(resample(converted, model_rate, OUTPUT_RATE))
 
+    async def convert_chunk(self, chunk: np.ndarray) -> np.ndarray:
+        """Convert one chunk of 48 kHz mono audio for the tunnelled transport.
+
+        The WebRTC path accumulates frames from a track; this takes whole chunks
+        straight from a socket. Both share the same converter, so the silence gate
+        and preset geometry apply identically.
+        """
+        converter = self.converter
+        model_rate = converter.sample_rate
+        block = converter.block_frame
+        resampled = resample(chunk, OUTPUT_RATE, model_rate)
+        if len(resampled) < block:
+            resampled = np.pad(resampled, (0, block - len(resampled)))
+        elif len(resampled) > block:
+            resampled = resampled[:block]
+        began = time.perf_counter()
+        converted = await asyncio.to_thread(converter.process, resampled)
+        self.inference_ms.append((time.perf_counter() - began) * 1000)
+        del self.inference_ms[:-200]
+        self.blocks += 1
+        return resample(converted, model_rate, OUTPUT_RATE)
+
 
 @app.get("/health")
 def health() -> dict:
     return {
         "status": _warm_state["status"],
         "detail": _warm_state["detail"],
+        "inbound_media": media_reachability(),
         "runtime": runtime.status(),
         "active_session": active.id if active else None,
         "state": active.state if active else "idle",
@@ -454,6 +507,68 @@ async def close(session_id: str) -> dict:
         active.lease.close()
         active = None
     return {"closed": session_id}
+
+
+@app.websocket("/v1/stream")
+async def stream(websocket: WebSocket) -> None:
+    """Tunnelled audio transport: 48 kHz mono int16 in, converted int16 out.
+
+    WebRTC needs inbound UDP, which a rented GPU behind NAT cannot provide. This
+    runs over the desktop's existing SSH tunnel instead, so realtime works
+    wherever SSH works. The client paces itself in real time, and each block it
+    sends produces exactly one converted block back.
+    """
+    session_id = websocket.query_params.get("session_id", "")
+    token = websocket.query_params.get("token", "")
+    await websocket.accept()
+    try:
+        ticket = read_ticket(session_id, token)
+    except HTTPException as error:
+        await websocket.close(code=4401, reason=str(error.detail))
+        return
+
+    lease = GpuLease()
+    if not lease.acquire():
+        await websocket.close(code=4409, reason="Worker is busy with another job")
+        return
+
+    global active
+    session = LiveSession(session_id, ticket, lease)
+    session.state = "connecting"
+    if active is not None and active.pc is not None:
+        await active.pc.close()
+    active = session
+
+    try:
+        converter = await runtime.ensure(ticket)
+        session.converter = converter
+        needed = round(converter.block_frame * OUTPUT_RATE / converter.sample_rate)
+        session.state = "streaming"
+        print(
+            f"[realtime] tunnel session {session_id}: model_rate={converter.sample_rate}"
+            f" block={converter.block_frame} needed={needed}",
+            flush=True,
+        )
+        buffer = np.zeros(0, dtype=np.float32)
+        while True:
+            payload = await websocket.receive_bytes()
+            samples = np.frombuffer(payload, dtype="<i2").astype(np.float32) / 32768.0
+            buffer = np.concatenate((buffer, samples))
+            while len(buffer) >= needed:
+                chunk = buffer[:needed]
+                buffer = buffer[needed:]
+                converted = await session.convert_chunk(chunk)
+                clipped = np.clip(converted, -1.0, 1.0)
+                await websocket.send_bytes((clipped * 32767.0).astype("<i2").tobytes())
+    except WebSocketDisconnect:
+        pass
+    except Exception as error:  # noqa: BLE001 - report, never kill the service
+        print(f"[realtime] tunnel session failed: {error!r}", flush=True)
+    finally:
+        session.state = "closed"
+        lease.close()
+        if active is session:
+            active = None
 
 
 @app.get("/v1/sessions/{session_id}/stats")

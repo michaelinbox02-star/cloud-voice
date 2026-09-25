@@ -1,12 +1,24 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { RealtimePreset, RealtimeStats, Voice } from "../api";
-import { listVoices, realtimeBegin, realtimeEnd, realtimeOffer, realtimeStats } from "../api";
+import {
+  listVoices,
+  realtimeBegin,
+  realtimeEnd,
+  realtimeHealth,
+  realtimeOffer,
+  realtimeStats,
+} from "../api";
 
 type Props = { online: boolean };
 
 type DeviceOption = { id: string; label: string };
 
 type SinkElement = HTMLAudioElement & { setSinkId?: (deviceId: string) => Promise<void> };
+
+type Transport = "auto" | "webrtc" | "tunnel";
+
+const TUNNEL_RATE = 48000;
+const TUNNEL_FRAME = 1024; // about 21 ms, small enough to keep latency down
 
 const presets: { value: RealtimePreset; label: string; note: string }[] = [
   { value: "low-latency", label: "Low latency", note: "0.12 s blocks · best for conversation" },
@@ -45,6 +57,8 @@ export function RealtimePage({ online }: Props) {
   const [startedAt, setStartedAt] = useState<number | null>(null);
   const [micAccess, setMicAccess] = useState<"unknown" | "granted" | "denied">("unknown");
   const [linkState, setLinkState] = useState<string>("idle");
+  const [transport, setTransport] = useState<Transport>("auto");
+  const [inboundMedia, setInboundMedia] = useState<string>("unknown");
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localRef = useRef<MediaStream | null>(null);
@@ -52,6 +66,16 @@ export function RealtimePage({ online }: Props) {
   const pollRef = useRef<number | null>(null);
   const virtualAudioRef = useRef<HTMLAudioElement | null>(null);
   const monitorAudioRef = useRef<HTMLAudioElement | null>(null);
+  const tunnelRef = useRef<{
+    socket: WebSocket;
+    context: AudioContext;
+    input: ScriptProcessorNode;
+    output: ScriptProcessorNode;
+    destination: MediaStreamAudioDestinationNode;
+    sink: GainNode;
+    playhead: GainNode;
+  } | null>(null);
+  const playBuffer = useRef<Float32Array>(new Float32Array(0));
 
   useEffect(() => {
     if (!online) {
@@ -116,6 +140,17 @@ export function RealtimePage({ online }: Props) {
     };
   }, []);
 
+  // Ask the worker whether WebRTC media can reach it. A rented GPU behind NAT
+  // cannot accept inbound UDP, so the tunnelled transport is the only one that
+  // works there; the choice is made from the worker's own answer rather than a
+  // guess.
+  useEffect(() => {
+    if (!online) return;
+    realtimeHealth()
+      .then((health) => setInboundMedia(String(health.inbound_media ?? "unknown")))
+      .catch(() => setInboundMedia("unknown"));
+  }, [online]);
+
   // Send the converted stream to the virtual cable and the monitor copy to the
   // user's own headphones. setSinkId is Chromium-only, which WebView2 provides.
   useEffect(() => {
@@ -132,6 +167,112 @@ export function RealtimePage({ online }: Props) {
     }
   }, [monitorId, live, monitor]);
 
+  /**
+   * Carry audio over the SSH tunnel instead of WebRTC.
+   *
+   * WebRTC needs inbound UDP, which a rented GPU behind NAT cannot provide, so
+   * this sends 48 kHz mono int16 frames down the tunnel the app already has and
+   * receives one converted chunk per chunk sent. The converted audio is routed
+   * through a media-stream destination so the existing output-device selection
+   * keeps working unchanged.
+   */
+  const startTunnel = async (
+    ticket: { session_id: string; token: string; signaling_port: number },
+    stream: MediaStream,
+  ) => {
+    const context = new AudioContext({ sampleRate: TUNNEL_RATE });
+    await context.resume();
+    const destination = context.createMediaStreamDestination();
+
+    // Microphone into the socket. The processor has to reach the destination or
+    // the browser will not run it, so it passes through a muted gain node.
+    const input = context.createScriptProcessor(TUNNEL_FRAME, 1, 1);
+    const sink = context.createGain();
+    sink.gain.value = 0;
+    context.createMediaStreamSource(stream).connect(input);
+    input.connect(sink);
+    sink.connect(context.destination);
+
+    // Converted audio back out, through the same path the WebRTC mode uses.
+    const output = context.createScriptProcessor(TUNNEL_FRAME, 1, 1);
+    const playhead = context.createGain();
+    playhead.gain.value = 1;
+    output.connect(destination);
+    output.connect(playhead);
+    playhead.connect(context.destination);
+
+    output.onaudioprocess = (event) => {
+      const channel = event.outputBuffer.getChannelData(0);
+      const pending = playBuffer.current;
+      const take = Math.min(channel.length, pending.length);
+      channel.set(pending.subarray(0, take));
+      if (take < channel.length) channel.fill(0, take);
+      playBuffer.current = pending.subarray(take);
+    };
+
+    const url =
+      `ws://127.0.0.1:${ticket.signaling_port}/v1/stream` +
+      `?session_id=${encodeURIComponent(ticket.session_id)}&token=${encodeURIComponent(ticket.token)}`;
+    const socket = new WebSocket(url);
+    socket.binaryType = "arraybuffer";
+
+    socket.onmessage = (event) => {
+      const incoming = new Int16Array(event.data as ArrayBuffer);
+      const floats = new Float32Array(incoming.length);
+      for (let index = 0; index < incoming.length; index += 1) {
+        floats[index] = incoming[index] / 32768;
+      }
+      const pending = playBuffer.current;
+      const merged = new Float32Array(pending.length + floats.length);
+      merged.set(pending);
+      merged.set(floats, pending.length);
+      playBuffer.current = merged;
+    };
+
+    socket.onerror = () => setError("The tunnelled audio connection failed to open.");
+    socket.onclose = (event) => {
+      if (event.code !== 1000 && tunnelRef.current) {
+        setError(`The tunnelled audio connection closed (${event.code}). ${event.reason}`);
+      }
+    };
+
+    input.onaudioprocess = (event) => {
+      if (socket.readyState !== WebSocket.OPEN) return;
+      const samples = event.inputBuffer.getChannelData(0);
+      const pcm = new Int16Array(samples.length);
+      for (let index = 0; index < samples.length; index += 1) {
+        const value = Math.max(-1, Math.min(1, samples[index]));
+        pcm[index] = Math.round(value * 32767);
+      }
+      socket.send(pcm.buffer);
+    };
+
+    tunnelRef.current = { socket, context, input, output, destination, sink, playhead };
+
+    if (virtualAudioRef.current) {
+      virtualAudioRef.current.srcObject = destination.stream;
+      void virtualAudioRef.current.play().catch(() => undefined);
+    }
+    if (monitorAudioRef.current) {
+      monitorAudioRef.current.srcObject = destination.stream;
+    }
+
+    setLinkState("tunnel");
+    setLive(true);
+    setStartedAt(Date.now());
+    setBlockSeconds(null);
+
+    pollRef.current = window.setInterval(async () => {
+      const session = sessionRef.current;
+      if (!session) return;
+      try {
+        setStats(await realtimeStats(session.id));
+      } catch {
+        // Transient failures while the stream settles are not worth surfacing.
+      }
+    }, 1500);
+  };
+
   const stop = async (drain = false) => {
     if (drain && sessionRef.current && pcRef.current?.connectionState === "connected") {
       // Keep the WebRTC track alive with silence long enough for the final word
@@ -144,6 +285,23 @@ export function RealtimePage({ online }: Props) {
     if (pollRef.current) {
       window.clearInterval(pollRef.current);
       pollRef.current = null;
+    }
+    const tunnel = tunnelRef.current;
+    tunnelRef.current = null;
+    if (tunnel) {
+      try {
+        tunnel.input.onaudioprocess = null;
+        tunnel.output.onaudioprocess = null;
+        tunnel.input.disconnect();
+        tunnel.output.disconnect();
+        tunnel.sink.disconnect();
+        tunnel.playhead.disconnect();
+        tunnel.socket.close();
+        await tunnel.context.close();
+      } catch {
+        // Teardown is best effort; the session is going away regardless.
+      }
+      playBuffer.current = new Float32Array(0);
     }
     const session = sessionRef.current;
     sessionRef.current = null;
@@ -193,6 +351,16 @@ export function RealtimePage({ online }: Props) {
 
       const ticket = await realtimeBegin(voiceId, preset);
       sessionRef.current = { id: ticket.session_id, token: ticket.token, voiceId };
+
+      // Direct WebRTC needs a publicly reachable UDP path to the worker. Behind
+      // NAT there is none, so the tunnel is the only transport that can carry
+      // audio; the choice follows the worker's own reachability report.
+      const useTunnel =
+        transport === "tunnel" || (transport === "auto" && inboundMedia !== "direct");
+      if (useTunnel) {
+        await startTunnel(ticket, stream);
+        return;
+      }
 
       // The worker gathers its own candidates, but the desktop has to produce
       // usable ones too. Chromium normally hides local addresses behind mDNS
@@ -372,6 +540,33 @@ export function RealtimePage({ online }: Props) {
           <input type="checkbox" checked={monitor} onChange={(event) => setMonitor(event.target.checked)} />
           <span>Monitor the converted voice in my headphones</span>
         </label>
+
+        <label>
+          Transport
+          <select
+            value={transport}
+            onChange={(event) => setTransport(event.target.value as Transport)}
+            disabled={live}
+          >
+            <option value="auto">Automatic</option>
+            <option value="webrtc">WebRTC — direct, lowest latency</option>
+            <option value="tunnel">SSH tunnel — works behind NAT</option>
+          </select>
+        </label>
+        {inboundMedia === "tunnel" && (
+          <div className="result">
+            <span className="result-indicator" />
+            <span>
+              This worker sits behind NAT, so audio is carried through the SSH tunnel. Direct WebRTC cannot reach it.
+            </span>
+          </div>
+        )}
+        {inboundMedia === "direct" && (
+          <div className="result good">
+            <span className="result-indicator" />
+            <span>This worker is directly reachable, so WebRTC gives the lowest latency.</span>
+          </div>
+        )}
         {monitor && (
           <label>
             Monitoring output
@@ -483,6 +678,9 @@ export function RealtimePage({ online }: Props) {
                 </span>
                 <span className="stat-note">
                   {stats?.blocks ?? 0} blocks · queue {stats?.queued_frames ?? 0} · link {linkState}
+                  {stats?.gate_open === null || stats?.gate_open === undefined
+                    ? ""
+                    : ` · gate ${stats.gate_open ? "open" : "closed"}`}
                 </span>
               </div>
             </div>

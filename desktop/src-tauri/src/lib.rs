@@ -445,7 +445,16 @@ fn realtime_begin(state: tauri::State<'_, AppState>, draft: RealtimeDraft) -> Re
         payload["inference_cfg_rate"] = serde_json::json!(rate);
     }
     with_connection(&state, |connection| {
-        connection.request("POST", "/v1/realtime/sessions", Some(payload), Some(60))
+        let mut ticket =
+            connection.request("POST", "/v1/realtime/sessions", Some(payload), Some(60))?;
+        // The webview needs the loopback port to open its tunnelled audio socket.
+        if let Some(object) = ticket.as_object_mut() {
+            object.insert(
+                "signaling_port".into(),
+                serde_json::json!(connection.signaling_port()),
+            );
+        }
+        Ok(ticket)
     })
 }
 
