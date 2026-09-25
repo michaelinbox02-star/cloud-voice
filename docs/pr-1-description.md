@@ -105,8 +105,14 @@ Verified independently on the branch tip:
   needs that pin bumped or the installer will deploy an older revision.
 - The branch is a draft for exactly the reasons above.
 - Portable Windows build from this revision (`85b73dd`):
-  `desktop/src-tauri/target/release/cloud-voice-studio.exe`, 11,181,056 bytes,
-  SHA-256 `FA565BB85E758A3ADAE95A682EECF0F280402C141299C4799B9F9ACA6EE6585D`.
-  It launches. The size and hash recorded in the 2026-09-24 handoff
+  `desktop/src-tauri/target/release/cloud-voice-studio.exe`, 11,761,664 bytes,
+  SHA-256 `53760389176E508A899C64D81CBCB22DF57845044603AD9F4F0FCE8A86A845FB`.
+  It launches, and the size and hash are stable across repeated reads.
+  The size and hash recorded in the 2026-09-24 handoff
   (11,157,504 / `A069C923…`) do not match that file, so treat the values above as
   the reference for this revision.
+
+  Caution for anyone re-hashing this artifact: an earlier reading in this session
+  returned a shorter file with the same modification time, because the build was
+  still writing when it was read. Confirm the size is unchanged across two reads
+  several seconds apart before recording a hash.
