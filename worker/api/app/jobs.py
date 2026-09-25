@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import fcntl
+import os
 import shutil
 import subprocess
 from contextlib import contextmanager, nullcontext
@@ -21,8 +22,22 @@ _executors = {
 
 @contextmanager
 def gpu_lease():
-    """Coordinate GPU jobs with the realtime container through the data volume."""
-    with (config.DATA_ROOT / "gpu.lock").open("a+b") as handle:
+    """Coordinate GPU jobs with the realtime container through the data volume.
+
+    The lock is shared between images that do not run as the same user: this API
+    runs as uid 10001, while the realtime container runs as root. Whoever creates
+    the file first therefore decides whether the other can open it, so the file is
+    forced to 0666 rather than left to the default umask.
+    """
+    path = config.DATA_ROOT / "gpu.lock"
+    try:
+        descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o666)
+        os.close(descriptor)
+        os.chmod(path, 0o666)
+    except PermissionError:
+        # Owned by another user; fall through and let open() report if unreadable.
+        pass
+    with path.open("r+b") as handle:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
         try:
             yield

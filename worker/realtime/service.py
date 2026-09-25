@@ -64,7 +64,14 @@ app = FastAPI(title="Cloud Voice Studio Realtime", version="0.1.0", docs_url=Non
 class GpuLease:
     def __init__(self) -> None:
         DATA_ROOT.mkdir(parents=True, exist_ok=True)
-        self.handle = (DATA_ROOT / "gpu.lock").open("a+b")
+        # This container runs as root while the API runs as uid 10001, so the
+        # file is forced world-writable. Without this, whichever container
+        # created it first locked the other out with a plain 0644.
+        path = DATA_ROOT / "gpu.lock"
+        descriptor = os.open(path, os.O_CREAT | os.O_RDWR, 0o666)
+        os.close(descriptor)
+        os.chmod(path, 0o666)
+        self.handle = path.open("r+b")
 
     def acquire(self) -> bool:
         try:
@@ -283,12 +290,14 @@ class LiveSession:
         self.track = ConvertedTrack()
         self.task: asyncio.Task | None = None
         self.inference_ms: list[float] = []
+        self.converter = None
         self.state = "created"
         self.started_at = time.time()
         self.blocks = 0
 
     async def run(self, incoming: MediaStreamTrack) -> None:
         converter = await runtime.ensure(self.ticket)
+        self.converter = converter
         model_rate = converter.sample_rate
         block = converter.block_frame
         needed_input = round(block * OUTPUT_RATE / model_rate)
@@ -461,4 +470,7 @@ def stats(session_id: str) -> dict:
         "dropped_frames": active.track.dropped,
         "uptime_seconds": round(time.time() - active.started_at, 1),
         "connection_state": active.pc.connectionState if active.pc else None,
+        # Lets the desktop show whether the worker is passing speech or holding
+        # the gate closed on silence.
+        "gate_open": active.converter.gate_open if active.converter else None,
     }
