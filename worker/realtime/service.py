@@ -38,16 +38,15 @@ TICKET_DIR = DATA_ROOT / "realtime-sessions"
 
 # A rented GPU usually sits behind the provider's NAT, so it cannot receive
 # inbound UDP and ICE has no candidate pair to try. A relay fixes that: both
-# ends connect outward to a public address rather than to each other. These
-# defaults point at a free public relay so realtime works out of the box; set
-# the three environment variables to use your own coturn instead.
-DEFAULT_TURN_URLS = (
-    "turn:openrelay.metered.ca:80,"
-    "turn:openrelay.metered.ca:443,"
-    "turns:openrelay.metered.ca:443"
-)
-DEFAULT_TURN_USERNAME = "openrelayproject"
-DEFAULT_TURN_CREDENTIAL = "openrelayproject"
+# ends connect outward to a public address rather than to each other.
+#
+# There is deliberately no default relay. The anonymous public ones now reject
+# allocations, so pointing at one only produced a confusing silent failure.
+# Configure a real relay through CLOUD_VOICE_TURN_URLS/USERNAME/CREDENTIAL;
+# without it the desktop falls back to the SSH tunnel.
+DEFAULT_TURN_URLS = ""
+DEFAULT_TURN_USERNAME = ""
+DEFAULT_TURN_CREDENTIAL = ""
 STUN_URLS = ["stun:stun.l.google.com:19302", "stun:stun1.l.google.com:19302"]
 
 
