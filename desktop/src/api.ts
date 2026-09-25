@@ -205,6 +205,22 @@ export const downloadBackup = (destinationPath: string) =>
 export const restoreBackup = (archivePath: string) =>
   invoke<{ restored_voices: number; voices: number }>("restore_backup", { archivePath });
 
+export type MicrophoneStatus = {
+  available: boolean;
+  branded: boolean;
+  endpoint: string | null;
+  current_name: string | null;
+  driver: string | null;
+  note: string;
+};
+
+export const virtualMicrophoneStatus = () => invoke<MicrophoneStatus>("virtual_microphone_status");
+
+export const brandVirtualMicrophone = (name?: string) =>
+  invoke<MicrophoneStatus>("brand_virtual_microphone", { name: name ?? null });
+
+export const restoreVirtualMicrophone = () => invoke<MicrophoneStatus>("restore_virtual_microphone");
+
 export const KOKORO_VOICES = [
   { id: "af_heart", label: "Heart · US female" },
   { id: "af_bella", label: "Bella · US female" },

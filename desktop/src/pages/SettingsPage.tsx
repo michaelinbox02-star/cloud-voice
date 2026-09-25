@@ -1,12 +1,22 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type { SystemInfo } from "../api";
-import { downloadBackup, restoreBackup } from "../api";
+import {
+  brandVirtualMicrophone,
+  downloadBackup,
+  restoreBackup,
+  restoreVirtualMicrophone,
+  virtualMicrophoneStatus,
+} from "../api";
+import type { MicrophoneStatus } from "../api";
 
 type Props = { online: boolean; system: SystemInfo | null; onRestored: () => void };
 
 export function SettingsPage({ online, system, onRestored }: Props) {
   const [busy, setBusy] = useState<"backup" | "restore" | null>(null);
+  const [microphone, setMicrophone] = useState<MicrophoneStatus | null>(null);
+  const [micBusy, setMicBusy] = useState(false);
+  const [micMessage, setMicMessage] = useState("");
   const [status, setStatus] = useState<{ tone: "neutral" | "good" | "bad"; message: string }>({
     tone: "neutral",
     message: "Export a backup before you destroy a GPU server, and restore it on the replacement.",
@@ -28,6 +38,47 @@ export function SettingsPage({ online, system, onRestored }: Props) {
       setStatus({ tone: "bad", message: String(error) });
     } finally {
       setBusy(null);
+    }
+  };
+
+  const refreshMicrophone = async () => {
+    try {
+      setMicrophone(await virtualMicrophoneStatus());
+    } catch (error) {
+      setMicMessage(String(error));
+    }
+  };
+
+  useEffect(() => {
+    void refreshMicrophone();
+  }, []);
+
+  const brandMicrophone = async () => {
+    setMicBusy(true);
+    setMicMessage("Waiting for administrator approval…");
+    try {
+      const updated = await brandVirtualMicrophone();
+      setMicrophone(updated);
+      setMicMessage(
+        "Done. Restart the call app so it re-reads its device list, then pick Cloud Voice Microphone.",
+      );
+    } catch (error) {
+      setMicMessage(String(error));
+    } finally {
+      setMicBusy(false);
+    }
+  };
+
+  const undoMicrophone = async () => {
+    setMicBusy(true);
+    setMicMessage("Restoring the previous name…");
+    try {
+      setMicrophone(await restoreVirtualMicrophone());
+      setMicMessage("The previous device name was restored.");
+    } catch (error) {
+      setMicMessage(String(error));
+    } finally {
+      setMicBusy(false);
     }
   };
 
@@ -94,6 +145,60 @@ export function SettingsPage({ online, system, onRestored }: Props) {
       <section className="panel">
         <div className="panel-head">
           <span className="step">2</span>
+          <div>
+            <h2>Virtual microphone</h2>
+            <p>
+              Call apps list the cable's other end. Naming it here means Zoom, WhatsApp, Skype and Discord show one
+              obvious device instead of a cable whose function is not obvious.
+            </p>
+          </div>
+          {microphone?.branded && <span className="pill good">Named</span>}
+        </div>
+
+        {microphone && (
+          <div className="stat-grid">
+            <div className="stat">
+              <span className="stat-label">Cable</span>
+              <span className="stat-value">{microphone.driver ?? "none found"}</span>
+              <span className="stat-note">{microphone.current_name ?? "—"}</span>
+            </div>
+            <div className="stat">
+              <span className="stat-label">Apps will show</span>
+              <span className="stat-value">{microphone.branded ? "Cloud Voice Microphone" : "the current name"}</span>
+              <span className="stat-note">{microphone.available ? "ready to rename" : "install VB-CABLE first"}</span>
+            </div>
+          </div>
+        )}
+
+        <div className="actions">
+          <button
+            className="secondary"
+            disabled={micBusy || !microphone?.available || microphone?.branded}
+            onClick={() => void brandMicrophone()}
+          >
+            {micBusy ? "Working…" : "Name it Cloud Voice Microphone"}
+          </button>
+          <button
+            className="secondary"
+            disabled={micBusy || !microphone?.branded}
+            onClick={() => void undoMicrophone()}
+          >
+            Restore original name
+          </button>
+        </div>
+        <div className={`result ${micMessage.toLowerCase().includes("done") ? "good" : ""}`}>
+          <span className="result-indicator" />
+          <span>{micMessage || microphone?.note || "Checking for a virtual audio cable…"}</span>
+        </div>
+        <p className="muted small">
+          Renaming asks for administrator approval once, because Windows stores device names system-wide. The previous
+          name is saved so it can be put back.
+        </p>
+      </section>
+
+      <section className="panel">
+        <div className="panel-head">
+          <span className="step">3</span>
           <div>
             <h2>Engine status</h2>
             <p>Each model family runs in its own container so dependencies never collide.</p>

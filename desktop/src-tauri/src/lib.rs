@@ -5,6 +5,7 @@
 //! never exposed publicly and the worker credential never enters the webview.
 
 mod worker;
+mod virtualmic;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -89,6 +90,17 @@ fn validate(input: &ServerInput) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Hide the console window for helper processes on Windows.
+#[cfg(windows)]
+fn harden_command(command: &mut Command) {
+    use std::os::windows::process::CommandExt;
+    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+    command.creation_flags(CREATE_NO_WINDOW);
+}
+
+#[cfg(not(windows))]
+fn harden_command(_: &mut Command) {}
 
 fn app_data_dir(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
@@ -632,6 +644,105 @@ fn restore_backup(state: tauri::State<'_, AppState>, archive_path: String) -> Re
 }
 
 #[tauri::command(async)]
+fn virtual_microphone_status() -> Result<virtualmic::MicrophoneStatus, String> {
+    virtualmic::status()
+}
+
+/// Rename the virtual cable's capture endpoint so app pickers show a clear name.
+///
+/// The write needs administrator rights, so it runs in an elevated PowerShell
+/// window: the user sees exactly one UAC prompt, and nothing is written until
+/// they approve it. The previous name is saved so the rename can be undone.
+#[tauri::command(async)]
+fn brand_virtual_microphone(
+    app: tauri::AppHandle,
+    name: Option<String>,
+) -> Result<virtualmic::MicrophoneStatus, String> {
+    let target = name.unwrap_or_else(|| virtualmic::BRANDED_NAME.to_string());
+    let status = virtualmic::status()?;
+    let endpoint = status
+        .endpoint
+        .clone()
+        .ok_or_else(|| "No virtual audio cable was found to rename.".to_string())?;
+
+    let data_dir = app_data_dir(&app)?;
+    let backup_file = virtualmic::backup_path(&data_dir);
+    if !backup_file.is_file() {
+        // Remember what to restore before changing anything.
+        let backup = virtualmic::Backup {
+            endpoint: endpoint.clone(),
+            original_name: status.current_name.clone().unwrap_or_default(),
+        };
+        fs::write(
+            &backup_file,
+            serde_json::to_string_pretty(&backup).map_err(|error| error.to_string())?,
+        )
+        .map_err(|error| format!("Could not record the previous microphone name: {error}"))?;
+    }
+
+    run_elevated(
+        &data_dir,
+        &virtualmic::branding_script(&endpoint, &target),
+    )?;
+
+    let updated = virtualmic::status()?;
+    if updated.current_name.as_deref() != Some(target.as_str()) {
+        return Err(format!(
+            "Windows still reports this microphone as '{}'. The change may need the app restarted, or administrator approval was declined.",
+            updated.current_name.unwrap_or_default()
+        ));
+    }
+    Ok(updated)
+}
+
+#[tauri::command(async)]
+fn restore_virtual_microphone(app: tauri::AppHandle) -> Result<virtualmic::MicrophoneStatus, String> {
+    let data_dir = app_data_dir(&app)?;
+    let backup_file = virtualmic::backup_path(&data_dir);
+    let raw = fs::read_to_string(&backup_file)
+        .map_err(|_| "There is no saved microphone name to restore.".to_string())?;
+    let backup: virtualmic::Backup =
+        serde_json::from_str(&raw).map_err(|error| format!("Saved name is unreadable: {error}"))?;
+
+    run_elevated(
+        &data_dir,
+        &virtualmic::branding_script(&backup.endpoint, &backup.original_name),
+    )?;
+    let _ = fs::remove_file(&backup_file);
+    virtualmic::status()
+}
+
+/// Run a PowerShell script with administrator rights and capture its output.
+fn run_elevated(data_dir: &Path, script: &str) -> Result<String, String> {
+    let script_path = data_dir.join("virtual-microphone.ps1");
+    let log_path = data_dir.join("virtual-microphone.log");
+    fs::write(&script_path, script).map_err(|error| error.to_string())?;
+    let _ = fs::remove_file(&log_path);
+
+    let outer = format!(
+        "Start-Process -FilePath powershell.exe -Verb RunAs -Wait -WindowStyle Hidden \
+-RedirectStandardOutput '{log}' -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-File','{script}'",
+        log = log_path.display(),
+        script = script_path.display()
+    );
+    let mut command = Command::new("powershell");
+    command.args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", &outer]);
+    harden_command(&mut command);
+
+    let output = command
+        .output()
+        .map_err(|error| format!("Could not start the elevated helper: {error}"))?;
+    if !output.status.success() {
+        let message = String::from_utf8_lossy(&output.stderr);
+        return Err(format!(
+            "Administrator approval was declined or the change failed: {}",
+            message.trim()
+        ));
+    }
+    Ok(fs::read_to_string(&log_path).unwrap_or_default())
+}
+
+#[tauri::command(async)]
 fn reveal_path(path: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err("That file is no longer on disk.".into());
@@ -706,6 +817,9 @@ pub fn run() {
             create_rvc_voice,
             download_backup,
             restore_backup,
+            virtual_microphone_status,
+            brand_virtual_microphone,
+            restore_virtual_microphone,
         ])
         .run(tauri::generate_context!())
         .expect("Cloud Voice Studio failed to start");
