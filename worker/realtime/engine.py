@@ -28,6 +28,29 @@ def _args(gpu: int, fp16: bool) -> argparse.Namespace:
     return argparse.Namespace(gpu=gpu, fp16=fp16, checkpoint_path=None, config_path=None)
 
 
+def gate_geometry(
+    *,
+    sample_rate: int,
+    block_frame: int,
+    extra_time_right: float,
+    hangover_ms: float,
+    fade_ms: float,
+) -> tuple[int, int, int]:
+    """Block counts the silence gate needs for a preset.
+
+    Kept separate from the converter so it can be tested without loading models;
+    a plain name error here previously reached the worker because every test
+    skipped this path.
+    """
+    block_seconds = max(block_frame / float(sample_rate), 1e-6)
+    delay_blocks = max(1, int(round(extra_time_right / block_seconds)))
+    hangover_blocks = max(1, int(round((hangover_ms / 1000.0) / block_seconds)))
+    fade_samples = min(
+        max(1, int(round((fade_ms / 1000.0) * sample_rate))), block_frame
+    )
+    return delay_blocks, hangover_blocks, fade_samples
+
+
 class SilenceGate:
     """Suppress model output generated from silence, without clipping speech.
 
@@ -178,11 +201,16 @@ class StreamingConverter:
         # audio that sat that far before the end. The gate therefore has to use a
         # past decision, or the first block of every utterance is silenced - the
         # defect that led to removing the upstream gate entirely.
-        block_seconds = max(self.block_seconds, 1e-6)
-        self.gate_delay_blocks = max(1, round(settings["extra_time_right"] / block_seconds))
-        self.gate_hangover_blocks = max(1, round((gate_hangover_ms / 1000.0) / block_seconds))
-        self.gate_fade_samples = min(
-            max(1, int(round((gate_fade_ms / 1000.0) * self.sample_rate))), self.block_frame
+        (
+            self.gate_delay_blocks,
+            self.gate_hangover_blocks,
+            self.gate_fade_samples,
+        ) = gate_geometry(
+            sample_rate=self.sample_rate,
+            block_frame=self.block_frame,
+            extra_time_right=settings["extra_time_right"],
+            hangover_ms=self.gate_hangover_ms,
+            fade_ms=self.gate_fade_ms,
         )
         self._gate = SilenceGate(
             threshold=self.gate_threshold,

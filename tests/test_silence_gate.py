@@ -17,17 +17,17 @@ ROOT = pathlib.Path(__file__).resolve().parent.parent
 
 
 def load_gate():
-    """Import SilenceGate without importing torch or the upstream engine."""
+    """Import the gate and its geometry helper without importing torch."""
     source = (ROOT / "worker" / "realtime" / "engine.py").read_text()
-    start = source.index("class SilenceGate:")
+    start = source.index("def gate_geometry(")
     end = source.index("class StreamingConverter:")
     module = types.ModuleType("silence_gate_under_test")
     module.__dict__["np"] = np
     exec(compile(source[start:end], "engine.py", "exec"), module.__dict__)
-    return module.SilenceGate
+    return module.SilenceGate, module.gate_geometry
 
 
-SilenceGate = load_gate()
+SilenceGate, gate_geometry = load_gate()
 
 BLOCK = 5292  # balanced preset at 22050 Hz
 SPEECH = 0.05  # about -26 dBFS
@@ -110,6 +110,29 @@ class SilenceGateTests(unittest.TestCase):
         for _ in range(6):
             gate.gate(np.ones(BLOCK, dtype=np.float32), block(loud))
         self.assertTrue(gate.open)
+
+    def test_geometry_matches_every_preset(self):
+        """Presets must delay by exactly the audio the pipeline holds back."""
+        rate = 22050
+        for name, block_time, right in (
+            ("low-latency", 0.12, 0.12),
+            ("balanced", 0.24, 0.24),
+            ("quality", 0.4, 0.4),
+        ):
+            zc = rate // 50
+            block_seconds = round(block_time * rate / zc) * zc / rate
+            delay, hangover, fade = gate_geometry(
+                sample_rate=rate,
+                block_frame=round(block_time * rate / zc) * zc,
+                extra_time_right=right,
+                hangover_ms=300.0,
+                fade_ms=20.0,
+            )
+            with self.subTest(preset=name):
+                self.assertEqual(delay, max(1, round(right / block_seconds)))
+                self.assertGreaterEqual(hangover, 1)
+                self.assertGreater(fade, 0)
+                self.assertLessEqual(fade, round(block_time * rate / zc) * zc)
 
 
 if __name__ == "__main__":
