@@ -11,19 +11,20 @@ import { getJob } from "./api";
  * last few jobs are persisted so a window restart re-attaches too.
  */
 
-const STORAGE_KEY = "cloud-voice-jobs";
+const STORAGE_PREFIX = "cloud-voice-jobs:";
 const POLL_MS = 2500;
 const KEEP = 20;
 
 type Listener = () => void;
 
 const listeners = new Set<Listener>();
-let jobs: Job[] = load();
+let storageKey: string | null = null;
+let jobs: Job[] = [];
 let timer: number | null = null;
 
-function load(): Job[] {
+function load(key: string): Job[] {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(key);
     const parsed = raw ? (JSON.parse(raw) as Job[]) : [];
     return Array.isArray(parsed) ? parsed : [];
   } catch {
@@ -32,8 +33,9 @@ function load(): Job[] {
 }
 
 function persist() {
+  if (storageKey === null) return;
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(jobs.slice(0, KEEP)));
+    localStorage.setItem(storageKey, JSON.stringify(jobs.slice(0, KEEP)));
   } catch {
     // Storage being unavailable must not stop job tracking.
   }
@@ -60,6 +62,16 @@ function snapshot(): Job[] {
 
 export function useJobs(): Job[] {
   return useSyncExternalStore(subscribe, snapshot);
+}
+
+export function setJobScope(scope: string | null) {
+  const nextKey = scope ? `${STORAGE_PREFIX}${scope}` : null;
+  if (nextKey === storageKey) return;
+  stopPolling();
+  storageKey = nextKey;
+  jobs = nextKey ? load(nextKey) : [];
+  emit();
+  if (jobs.some(isActive)) startPolling();
 }
 
 export function latestJob(kinds: string[]): Job | undefined {
@@ -100,7 +112,10 @@ async function poll() {
     active.map(async (job) => {
       try {
         return await getJob(job.id);
-      } catch {
+      } catch (error) {
+        if (String(error).includes("HTTP 404")) {
+          return { ...job, status: "failed" as const, error: "This job no longer exists on the connected worker." };
+        }
         // Transient failures are expected while services restart; keep the job
         // and try again on the next tick instead of dropping it.
         return null;
@@ -115,6 +130,3 @@ async function poll() {
     emit();
   }
 }
-
-// Resume polling on startup if the previous session left a job in flight.
-if (jobs.some(isActive)) startPolling();

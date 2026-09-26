@@ -7,7 +7,7 @@ type Props = {
   setServer: (server: ServerInput) => void;
   online: boolean;
   system: SystemInfo | null;
-  onConnected: () => void;
+  onConnected: (server: ServerInput) => void;
   onDisconnected: () => void;
 };
 
@@ -53,7 +53,7 @@ export function ServerPage({ server, setServer, online, system, onConnected, onD
         });
       } else {
         const info = await connectWorker(server);
-        onConnected();
+        onConnected(server);
         setStatus({
           tone: "good",
           message: `Connected. ${info.gpus.length} GPU available.`,

@@ -528,9 +528,13 @@ async def offer(request: OfferRequest) -> dict:
         answer = await pc.createAnswer()
         await pc.setLocalDescription(answer)
 
-        deadline = time.time() + 8
+        # The desktop and worker use non-trickle ICE. Returning an answer before
+        # gathering completes can omit the only usable TURN candidate.
+        deadline = time.time() + 15
         while pc.iceGatheringState != "complete" and time.time() < deadline:
             await asyncio.sleep(0.1)
+        if pc.iceGatheringState != "complete":
+            raise HTTPException(status_code=504, detail="ICE candidate gathering timed out")
 
         return {
             "sdp": pc.localDescription.sdp,

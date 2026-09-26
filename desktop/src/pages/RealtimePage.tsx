@@ -37,6 +37,23 @@ function looksLikeVirtualCable(label: string): boolean {
   );
 }
 
+async function waitForIceGathering(pc: RTCPeerConnection, timeoutMs = 15000): Promise<void> {
+  if (pc.iceGatheringState === "complete") return;
+  await new Promise<void>((resolve, reject) => {
+    const timeout = window.setTimeout(() => {
+      pc.removeEventListener("icegatheringstatechange", onChange);
+      reject(new Error("ICE candidate gathering did not finish. Use Automatic or SSH tunnel transport."));
+    }, timeoutMs);
+    const onChange = () => {
+      if (pc.iceGatheringState !== "complete") return;
+      window.clearTimeout(timeout);
+      pc.removeEventListener("icegatheringstatechange", onChange);
+      resolve();
+    };
+    pc.addEventListener("icegatheringstatechange", onChange);
+  });
+}
+
 export function RealtimePage({ online }: Props) {
   const [voices, setVoices] = useState<Voice[]>([]);
   const [voiceId, setVoiceId] = useState("");
@@ -367,9 +384,6 @@ export function RealtimePage({ online }: Props) {
       const ticket = await realtimeBegin(voiceId, preset);
       sessionRef.current = { id: ticket.session_id, token: ticket.token, voiceId };
 
-      // Direct WebRTC needs a publicly reachable UDP path to the worker. Behind
-      // NAT there is none, so the tunnel is the only transport that can carry
-      // audio; the choice follows the worker's own reachability report.
       // Direct WebRTC needs a reachable UDP path. When the worker is behind NAT a
       // relay supplies one, so WebRTC still wins on a NATed host as long as TURN
       // is configured. The tunnel remains the last resort.
@@ -417,6 +431,9 @@ export function RealtimePage({ online }: Props) {
 
       const offer = await pc.createOffer();
       await pc.setLocalDescription(offer);
+      // Signalling is non-trickle, so the SDP must contain every local ICE
+      // candidate before it is sent to the worker.
+      await waitForIceGathering(pc);
       const answer = await realtimeOffer(
         ticket.session_id,
         ticket.token,

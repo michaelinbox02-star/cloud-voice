@@ -10,6 +10,7 @@ import { PlaceholderPage } from "./pages/PlaceholderPage";
 import { TtsPage } from "./pages/TtsPage";
 import { TrainingPage } from "./pages/TrainingPage";
 import { SettingsPage } from "./pages/SettingsPage";
+import { setJobScope } from "./jobStore";
 import "./style.css";
 
 type View = "realtime" | "voices" | "tts" | "voice-to-voice" | "training" | "server" | "settings";
@@ -161,8 +162,12 @@ function App() {
             setServer={setServer}
             online={online}
             system={system}
-            onConnected={refresh}
+            onConnected={(connectedServer) => {
+              setJobScope(`${connectedServer.username}@${connectedServer.host}:${connectedServer.port}`);
+              void refresh();
+            }}
             onDisconnected={() => {
+              setJobScope(null);
               setOnline(false);
               setSystem(null);
             }}
