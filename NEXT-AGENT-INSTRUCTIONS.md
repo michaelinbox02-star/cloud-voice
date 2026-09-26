@@ -8,7 +8,7 @@ Stabilize the existing product before adding features. Preserve working voice co
 
 ## Current repository and worker
 
-- Local branch: `main`, originally clean at `a8dd523` before the foundational corrections described below.
+- Local branch: `main`. The foundational worker/code commit is `4edfcc0e78e6319da30b919fa77f8cbc734f7da7`; the following commit updates only the installer pin and this handoff.
 - Repository: `https://github.com/michaelinbox02-star/cloud-voice`.
 - Current GPU access: `ssh -p 42407 -i C:\Users\USER\.ssh\ai-avatar-gpu root@77.104.167.148`.
 - The command supplied by the user included `-L 8080:localhost:8080`; Cloud Voice does not use port 8080. The desktop opens its own API and realtime forwards. Do not redesign ports around 8080.
@@ -52,28 +52,11 @@ The two old handoff files were removed because their host addresses, revisions, 
 - `python -m py_compile worker/realtime/service.py`: passed.
 - `npm run build` from `desktop`: TypeScript and Vite production build passed. The first sandboxed attempt failed only because Node could not traverse `C:\Users\USER`; rerunning outside the sandbox passed.
 - `git diff --check`: passed.
-- No deployment, container rebuild, portable executable rebuild, commit, or push has been performed for these current worktree corrections yet.
+- No deployment, container rebuild, or portable executable rebuild has been performed for these corrections. The code correction is committed, and `WORKER_RELEASE` is pinned to its full SHA.
 
 ## Required next steps, in order
 
-### 1. Review and commit the foundational correction
-
-First inspect only the expected changes:
-
-```powershell
-git status --short
-git diff -- desktop/src/jobStore.ts desktop/src/main.tsx desktop/src/pages/ServerPage.tsx desktop/src/pages/RealtimePage.tsx worker/realtime/service.py NEXT-AGENT-INSTRUCTIONS.md
-```
-
-Run the three validation commands above again if any file changes. Then commit all expected code and documentation changes together. Record the full commit SHA; call it `<worker_commit>`.
-
-### 2. Pin the installer correctly
-
-Set `WORKER_RELEASE` in `desktop/src-tauri/src/lib.rs` to the full 40-character `<worker_commit>` SHA. Commit that one-line pin separately. This two-commit sequence is required because the worker must check out a commit that already exists and contains the worker code; a commit cannot pin itself.
-
-Push both commits to `origin/main` only after confirming `git status --short` is clean and the two commits contain no unrelated files.
-
-### 3. Rebuild the portable desktop application
+### 1. Rebuild the portable desktop application
 
 From `desktop` run:
 
@@ -83,14 +66,14 @@ npm run app:portable
 
 The artifact must be `desktop/src-tauri/target/release/cloud-voice-studio.exe`. Record its size, modification time, and SHA-256 in this file or a release note. Do not claim the executable is updated based only on `npm run build`; that command builds the web frontend, not the Tauri `.exe`.
 
-### 4. Deploy only the changed worker service
+### 2. Deploy only the changed worker service
 
-The current correction changes only `worker/realtime` on the GPU. After the commits and pin exist remotely, use the current SSH target and replace `<worker_commit>` below:
+The current correction changes only `worker/realtime` on the GPU. Use the current SSH target and the pinned worker commit:
 
 ```bash
 cd /root/cloud-voice
 git fetch origin main
-git checkout --detach <worker_commit>
+git checkout --detach 4edfcc0e78e6319da30b919fa77f8cbc734f7da7
 docker compose --env-file .env -f worker/compose.yaml build realtime
 docker compose --env-file .env -f worker/compose.yaml up -d --no-deps --no-build --force-recreate realtime
 docker compose --env-file .env -f worker/compose.yaml ps realtime
@@ -98,7 +81,7 @@ docker compose --env-file .env -f worker/compose.yaml ps realtime
 
 This briefly ends an active realtime session. Check that no session is active before restarting. Do not rebuild API, Seed-VC, RVC, or TTS for this correction.
 
-### 5. Perform the two acceptance tests
+### 3. Perform the two acceptance tests
 
 **Job isolation:** connect to the RTX 3090 using the rebuilt desktop, start one short job, and verify the browser storage key includes `root@77.104.167.148:42407`. A fabricated or previously saved missing job may return 404 once, but must become `failed` and stop polling. Disconnecting must stop polling; reconnecting to the same host may restore its actual active jobs.
 
