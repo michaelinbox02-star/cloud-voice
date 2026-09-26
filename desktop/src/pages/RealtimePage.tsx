@@ -17,8 +17,38 @@ type SinkElement = HTMLAudioElement & { setSinkId?: (deviceId: string) => Promis
 
 type Transport = "auto" | "webrtc" | "tunnel";
 
+type TunnelDiagnostics = {
+  socketState: "idle" | "connecting" | "open" | "closing" | "closed";
+  audioContextState: AudioContextState | "idle";
+  framesSent: number;
+  messagesReceived: number;
+  bytesSent: number;
+  bytesReceived: number;
+  statsSucceeded: number;
+  statsFailed: number;
+  startedAt: number | null;
+  lastFrameAt: number | null;
+  lastMessageAt: number | null;
+  lastStatsAt: number | null;
+};
+
 const TUNNEL_RATE = 48000;
 const TUNNEL_FRAME = 1024; // about 21 ms, small enough to keep latency down
+
+const emptyTunnelDiagnostics = (): TunnelDiagnostics => ({
+  socketState: "idle",
+  audioContextState: "idle",
+  framesSent: 0,
+  messagesReceived: 0,
+  bytesSent: 0,
+  bytesReceived: 0,
+  statsSucceeded: 0,
+  statsFailed: 0,
+  startedAt: null,
+  lastFrameAt: null,
+  lastMessageAt: null,
+  lastStatsAt: null,
+});
 
 const presets: { value: RealtimePreset; label: string; note: string }[] = [
   { value: "low-latency", label: "Low latency", note: "0.12 s blocks · best for conversation" },
@@ -54,6 +84,37 @@ async function waitForIceGathering(pc: RTCPeerConnection, timeoutMs = 15000): Pr
   });
 }
 
+async function waitForSocketOpen(socket: WebSocket, timeoutMs = 10000): Promise<void> {
+  if (socket.readyState === WebSocket.OPEN) return;
+  await new Promise<void>((resolve, reject) => {
+    const cleanup = () => {
+      window.clearTimeout(timeout);
+      socket.removeEventListener("open", onOpen);
+      socket.removeEventListener("error", onError);
+      socket.removeEventListener("close", onClose);
+    };
+    const onOpen = () => {
+      cleanup();
+      resolve();
+    };
+    const onError = () => {
+      cleanup();
+      reject(new Error("The tunnelled audio WebSocket failed before it opened."));
+    };
+    const onClose = (event: CloseEvent) => {
+      cleanup();
+      reject(new Error(`The tunnelled audio WebSocket closed before it opened (${event.code}).`));
+    };
+    const timeout = window.setTimeout(() => {
+      cleanup();
+      reject(new Error("The tunnelled audio WebSocket did not open within 10 seconds."));
+    }, timeoutMs);
+    socket.addEventListener("open", onOpen);
+    socket.addEventListener("error", onError);
+    socket.addEventListener("close", onClose);
+  });
+}
+
 export function RealtimePage({ online }: Props) {
   const [voices, setVoices] = useState<Voice[]>([]);
   const [voiceId, setVoiceId] = useState("");
@@ -77,6 +138,7 @@ export function RealtimePage({ online }: Props) {
   const [transport, setTransport] = useState<Transport>("auto");
   const [inboundMedia, setInboundMedia] = useState<string>("unknown");
   const [iceServers, setIceServers] = useState<RTCIceServer[]>([]);
+  const [tunnelDiagnostics, setTunnelDiagnostics] = useState<TunnelDiagnostics>(emptyTunnelDiagnostics);
 
   const pcRef = useRef<RTCPeerConnection | null>(null);
   const localRef = useRef<MediaStream | null>(null);
@@ -91,9 +153,10 @@ export function RealtimePage({ online }: Props) {
     output: ScriptProcessorNode;
     destination: MediaStreamAudioDestinationNode;
     sink: GainNode;
-    playhead: GainNode;
   } | null>(null);
   const playBuffer = useRef<Float32Array>(new Float32Array(0));
+  const tunnelDiagnosticsRef = useRef<TunnelDiagnostics>(emptyTunnelDiagnostics());
+  const diagnosticsTimerRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!online) {
@@ -155,6 +218,7 @@ export function RealtimePage({ online }: Props) {
   useEffect(() => {
     return () => {
       if (pollRef.current) window.clearInterval(pollRef.current);
+      if (diagnosticsTimerRef.current) window.clearInterval(diagnosticsTimerRef.current);
     };
   }, []);
 
@@ -212,8 +276,26 @@ export function RealtimePage({ online }: Props) {
     ticket: { session_id: string; token: string; signaling_port: number },
     stream: MediaStream,
   ) => {
+    const diagnostics = emptyTunnelDiagnostics();
+    diagnostics.socketState = "connecting";
+    tunnelDiagnosticsRef.current = diagnostics;
+    setTunnelDiagnostics({ ...diagnostics });
+    if (diagnosticsTimerRef.current) window.clearInterval(diagnosticsTimerRef.current);
+    diagnosticsTimerRef.current = window.setInterval(() => {
+      setTunnelDiagnostics({ ...tunnelDiagnosticsRef.current });
+    }, 1000);
+
     const context = new AudioContext({ sampleRate: TUNNEL_RATE });
     await context.resume();
+    diagnostics.audioContextState = context.state;
+    context.onstatechange = () => {
+      tunnelDiagnosticsRef.current.audioContextState = context.state;
+    };
+    if (context.state !== "running") {
+      const state = context.state;
+      await context.close();
+      throw new Error(`The microphone audio engine is ${state}; it must be running before streaming.`);
+    }
     const destination = context.createMediaStreamDestination();
 
     // Microphone into the socket. The processor has to reach the destination or
@@ -225,13 +307,10 @@ export function RealtimePage({ online }: Props) {
     input.connect(sink);
     sink.connect(context.destination);
 
-    // Converted audio back out, through the same path the WebRTC mode uses.
+    // Converted audio goes only through the media-stream destination. The two
+    // audio elements route it to the selected virtual cable and optional monitor.
     const output = context.createScriptProcessor(TUNNEL_FRAME, 1, 1);
-    const playhead = context.createGain();
-    playhead.gain.value = 1;
     output.connect(destination);
-    output.connect(playhead);
-    playhead.connect(context.destination);
 
     output.onaudioprocess = (event) => {
       const channel = event.outputBuffer.getChannelData(0);
@@ -249,6 +328,9 @@ export function RealtimePage({ online }: Props) {
     socket.binaryType = "arraybuffer";
 
     socket.onmessage = (event) => {
+      diagnostics.messagesReceived += 1;
+      diagnostics.bytesReceived += event.data.byteLength;
+      diagnostics.lastMessageAt = Date.now();
       const incoming = new Int16Array(event.data as ArrayBuffer);
       const floats = new Float32Array(incoming.length);
       for (let index = 0; index < incoming.length; index += 1) {
@@ -261,8 +343,11 @@ export function RealtimePage({ online }: Props) {
       playBuffer.current = merged;
     };
 
-    socket.onerror = () => setError("The tunnelled audio connection failed to open.");
+    socket.onerror = () => setError("The tunnelled audio connection encountered an error.");
     socket.onclose = (event) => {
+      diagnostics.socketState = "closed";
+      setLinkState("closed");
+      setTunnelDiagnostics({ ...diagnostics });
       if (event.code !== 1000 && tunnelRef.current) {
         setError(`The tunnelled audio connection closed (${event.code}). ${event.reason}`);
       }
@@ -277,9 +362,17 @@ export function RealtimePage({ online }: Props) {
         pcm[index] = Math.round(value * 32767);
       }
       socket.send(pcm.buffer);
+      diagnostics.framesSent += 1;
+      diagnostics.bytesSent += pcm.byteLength;
+      diagnostics.lastFrameAt = Date.now();
     };
 
-    tunnelRef.current = { socket, context, input, output, destination, sink, playhead };
+    tunnelRef.current = { socket, context, input, output, destination, sink };
+    setLinkState("connecting");
+    await waitForSocketOpen(socket);
+    diagnostics.socketState = "open";
+    diagnostics.startedAt = Date.now();
+    setTunnelDiagnostics({ ...diagnostics });
 
     if (virtualAudioRef.current) {
       virtualAudioRef.current.srcObject = destination.stream;
@@ -299,8 +392,10 @@ export function RealtimePage({ online }: Props) {
       if (!session) return;
       try {
         setStats(await realtimeStats(session.id));
+        diagnostics.statsSucceeded += 1;
+        diagnostics.lastStatsAt = Date.now();
       } catch {
-        // Transient failures while the stream settles are not worth surfacing.
+        diagnostics.statsFailed += 1;
       }
     }, 1500);
   };
@@ -318,21 +413,29 @@ export function RealtimePage({ online }: Props) {
       window.clearInterval(pollRef.current);
       pollRef.current = null;
     }
+    if (diagnosticsTimerRef.current) {
+      window.clearInterval(diagnosticsTimerRef.current);
+      diagnosticsTimerRef.current = null;
+    }
     const tunnel = tunnelRef.current;
     tunnelRef.current = null;
     if (tunnel) {
       try {
+        tunnelDiagnosticsRef.current.socketState = "closing";
+        tunnel.context.onstatechange = null;
         tunnel.input.onaudioprocess = null;
         tunnel.output.onaudioprocess = null;
         tunnel.input.disconnect();
         tunnel.output.disconnect();
         tunnel.sink.disconnect();
-        tunnel.playhead.disconnect();
         tunnel.socket.close();
         await tunnel.context.close();
+        tunnelDiagnosticsRef.current.audioContextState = tunnel.context.state;
+        tunnelDiagnosticsRef.current.socketState = "closed";
       } catch {
         // Teardown is best effort; the session is going away regardless.
       }
+      setTunnelDiagnostics({ ...tunnelDiagnosticsRef.current });
       playBuffer.current = new Float32Array(0);
     }
     const session = sessionRef.current;
@@ -479,6 +582,23 @@ export function RealtimePage({ online }: Props) {
     // Input collection, model right context, inference, and a nominal network leg.
     return Math.round((blockSeconds + lookaheadSeconds) * 1000 + stats.inference_ms_mean + 120);
   }, [stats, blockSeconds, lookaheadSeconds]);
+
+  const tunnelDiagnosticLog = useMemo(() => {
+    const elapsed = tunnelDiagnostics.startedAt
+      ? Math.max(1, (Date.now() - tunnelDiagnostics.startedAt) / 1000)
+      : 0;
+    const age = (timestamp: number | null) =>
+      timestamp === null ? "never" : `${((Date.now() - timestamp) / 1000).toFixed(1)} s ago`;
+    return [
+      `socket: ${tunnelDiagnostics.socketState}`,
+      `audio context: ${tunnelDiagnostics.audioContextState}`,
+      `microphone frames sent: ${tunnelDiagnostics.framesSent} (${elapsed ? (tunnelDiagnostics.framesSent / elapsed).toFixed(1) : "0.0"}/s, ${tunnelDiagnostics.bytesSent} bytes)` ,
+      `converted messages received: ${tunnelDiagnostics.messagesReceived} (${elapsed ? (tunnelDiagnostics.messagesReceived / elapsed).toFixed(1) : "0.0"}/s, ${tunnelDiagnostics.bytesReceived} bytes)`,
+      `last microphone frame: ${age(tunnelDiagnostics.lastFrameAt)}`,
+      `last converted message: ${age(tunnelDiagnostics.lastMessageAt)}`,
+      `API stats polls: ${tunnelDiagnostics.statsSucceeded} succeeded, ${tunnelDiagnostics.statsFailed} failed; last success ${age(tunnelDiagnostics.lastStatsAt)}`,
+    ].join("\n");
+  }, [tunnelDiagnostics]);
 
   const uptime = startedAt ? Math.max(0, Math.round((Date.now() - startedAt) / 1000)) : 0;
   const labelsHidden = outputs.length > 0 && outputs.every((device) => device.label === "Output");
@@ -721,6 +841,12 @@ export function RealtimePage({ online }: Props) {
                 </span>
               </div>
             </div>
+          )}
+          {tunnelDiagnostics.socketState !== "idle" && (
+            <details className="log" open={Boolean(error)}>
+              <summary>Tunnel technical log</summary>
+              <pre>{tunnelDiagnosticLog}</pre>
+            </details>
           )}
         </section>
       )}

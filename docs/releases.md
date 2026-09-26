@@ -64,3 +64,16 @@ timeout`, and the session reports `0 blocks` — the worker received no audio.
 Diagnosed but deliberately not fixed. Full evidence, the two candidate causes and
 the tests that separate them are in
 [`docs/realtime-tunnel-keepalive.md`](realtime-tunnel-keepalive.md).
+
+## 2026-09-25 — tunnel diagnostics
+
+- Added tunnel socket, audio-context, microphone-send, converted-receive and
+  API-poll counters to the Realtime technical log.
+- The UI now reports `connecting` until the WebSocket actually opens and rejects
+  a suspended audio context instead of showing a false live state.
+- Removed the duplicate direct playback route that could cause echo.
+- Portable executable: `desktop/src-tauri/target/release/cloud-voice-studio.exe`,
+  11,302,912 bytes, SHA-256
+  `974B7C33A3A0E328CBCDF1E591DDD8669D5C858AAAE70DF5E71141D41A30BE8F`.
+- `npm run build`, `npm run app:portable`, and all 10 Python tests passed.
+- Desktop-only update; no worker restart or deployment is required.

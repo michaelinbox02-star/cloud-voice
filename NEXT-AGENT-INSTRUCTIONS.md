@@ -115,16 +115,18 @@ After a deliberate full deployment, wait for `/v1/system` to report Seed-VC read
 
 ## Important historical facts that remain valid
 
-## Open issue added 2026-09-25 (diagnosed, not fixed)
+## Open issue added 2026-09-25 (instrumented, live classification pending)
 
 The tunnelled realtime session closes with WebSocket `1011 keepalive ping
 timeout` while reporting `0 blocks`, meaning no audio reached the worker. The
 keepalive itself is sound — a healthy local client was held open for 75 seconds
 without being closed — so the cause is either a stalled tunnel or a client that
-never sent audio. Both candidates, the evidence, the code observations
-(including a definite double-playback defect) and the tests that separate them
-are documented in `docs/realtime-tunnel-keepalive.md`. Read that before touching
-the tunnel, the keepalive timeout, or the client audio graph.
+never sent audio. The desktop now exposes the counters needed to distinguish
+those cases, verifies the audio context is running, reports honest socket state,
+and no longer plays tunnel output through a duplicate route. Build the portable
+app and perform one live run; use the interpretation guide in
+`docs/realtime-tunnel-keepalive.md` before changing keepalive settings or the
+audio graph again.
 
 - The delayed silence gate fix and short-utterance work have unit/GPU evidence and should not be reverted casually.
 - The RVC voice mismatch fix makes the stored voice engine authoritative and should remain.

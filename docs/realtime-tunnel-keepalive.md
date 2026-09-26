@@ -2,9 +2,11 @@
 
 Reported 2026-09-25 on the RTX 3090 worker (`77.104.167.148:42407`).
 
-**Status: diagnosed, not fixed.** The mechanism is confirmed; the trigger is not,
-and the two candidate triggers need different fixes. Do not patch the keepalive
-timeout first — see "Do not do this" below.
+**Status: instrumented locally; live classification pending.** The mechanism is
+confirmed, but the trigger still needs one desktop run. The client now reports
+socket state, audio-context state, microphone frames sent, converted messages
+received and API-poll health. Do not patch the keepalive timeout first — see
+"Do not do this" below.
 
 ## Symptom
 
@@ -94,6 +96,25 @@ the two hypotheses:
    is not checked and the context state is not reported, which is what makes
    hypothesis B invisible.
 
+## Local correction implemented
+
+`desktop/src/pages/RealtimePage.tsx` now:
+
+- refuses to continue unless the `AudioContext` is actually `running`;
+- reports socket and context state plus sent/received frame, byte and rate
+  counters in a **Tunnel technical log** updated once per second;
+- records successful and failed realtime-stats polls so an SSH/API stall can be
+  distinguished from a stopped audio graph;
+- reports the link as `connecting` until the WebSocket `open` event and fails
+  clearly if it cannot open within ten seconds; and
+- removes the direct `output -> context.destination` branch, leaving the
+  selected virtual-cable and optional monitor `<audio>` elements as the only
+  converted-audio outputs.
+
+The frontend production build and the existing ten Python tests pass. The new
+desktop behavior still needs a portable build and one live run before this issue
+can be classified or closed.
+
 ## Do not do this
 
 **Do not simply raise `--ws-ping-timeout`.** The keepalive is working as
@@ -105,13 +126,10 @@ audio-carrying session being closed.
 
 ## Suggested order for the next agent
 
-1. Add client-side counters (frames sent, socket `readyState`, AudioContext
-   state, messages received) and log them to the technical log. This is
-   diagnostic only and settles A versus B in one run.
-2. Run one live session and read the counters.
+1. Build and run the updated portable desktop application.
+2. Run one live tunnel session and read the **Tunnel technical log**.
 3. Fix whichever cause the counters identify:
    - stalled tunnel → reconnect logic plus honest link state;
    - no frames sent → the audio graph (context state, processor wiring).
-4. Fix the double-playback routing regardless, since it is a definite defect.
-5. Re-test the two acceptance tests in `NEXT-AGENT-INSTRUCTIONS.md`, including
+4. Re-test the two acceptance tests in `NEXT-AGENT-INSTRUCTIONS.md`, including
    stopping immediately after the last word.
