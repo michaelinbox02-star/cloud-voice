@@ -8,7 +8,7 @@ Stabilize the existing product before adding features. Preserve working voice co
 
 ## Current repository and worker
 
-- Local branch: `main`, three commits ahead of `origin/main` after this documentation update. The foundational worker/code commit is `4edfcc0e78e6319da30b919fa77f8cbc734f7da7`; `ac624f2` pins the installer to it. These commits are local and have not been pushed.
+- Local branch: `main`, aligned with `origin/main` after this documentation correction. The foundational worker/code commit is `4edfcc0e78e6319da30b919fa77f8cbc734f7da7`; `ac624f2` pins the installer to it. The corrections are published on GitHub.
 - Repository: `https://github.com/michaelinbox02-star/cloud-voice`.
 - Current GPU access: `ssh -p 42407 -i C:\Users\USER\.ssh\ai-avatar-gpu root@77.104.167.148`.
 - The command supplied by the user included `-L 8080:localhost:8080`; Cloud Voice does not use port 8080. The desktop opens its own API and realtime forwards. Do not redesign ports around 8080.
@@ -52,15 +52,11 @@ The two old handoff files were removed because their host addresses, revisions, 
 - `python -m py_compile worker/realtime/service.py`: passed.
 - `npm run build` from `desktop`: TypeScript and Vite production build passed. The first sandboxed attempt failed only because Node could not traverse `C:\Users\USER`; rerunning outside the sandbox passed.
 - `git diff --check`: passed.
-- No deployment, container rebuild, portable executable rebuild, or remote push has been performed for these corrections. The code correction is committed locally, and `WORKER_RELEASE` is pinned to its full SHA. Automatic approval review rejected a direct push to default branch `main`; obtain explicit user approval before publishing there, or use a separate branch/PR if the user directs that workflow.
+- No deployment, container rebuild, or portable executable rebuild has been performed for these corrections. The code correction and installer pin are committed and pushed to `origin/main`.
 
 ## Required next steps, in order
 
-### 1. Publish only with explicit direction
-
-The GPU cannot fetch `4edfcc0` until these local commits exist on GitHub. Ask the user to choose and explicitly authorize either a push to `main` or publication on a separate branch/PR. Do not deploy before the chosen remote contains `4edfcc0`.
-
-### 2. Rebuild the portable desktop application
+### 1. Rebuild the portable desktop application
 
 From `desktop` run:
 
@@ -70,7 +66,7 @@ npm run app:portable
 
 The artifact must be `desktop/src-tauri/target/release/cloud-voice-studio.exe`. Record its size, modification time, and SHA-256 in this file or a release note. Do not claim the executable is updated based only on `npm run build`; that command builds the web frontend, not the Tauri `.exe`.
 
-### 3. Deploy only the changed worker service
+### 2. Deploy only the changed worker service
 
 The current correction changes only `worker/realtime` on the GPU. Use the current SSH target and the pinned worker commit:
 
@@ -85,7 +81,7 @@ docker compose --env-file .env -f worker/compose.yaml ps realtime
 
 This briefly ends an active realtime session. Check that no session is active before restarting. Do not rebuild API, Seed-VC, RVC, or TTS for this correction.
 
-### 4. Perform the two acceptance tests
+### 3. Perform the two acceptance tests
 
 **Job isolation:** connect to the RTX 3090 using the rebuilt desktop, start one short job, and verify the browser storage key includes `root@77.104.167.148:42407`. A fabricated or previously saved missing job may return 404 once, but must become `failed` and stop polling. Disconnecting must stop polling; reconnecting to the same host may restore its actual active jobs.
 
