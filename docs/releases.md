@@ -56,3 +56,11 @@ second, a microphone:
 
 1. Job isolation across workers — see `NEXT-AGENT-INSTRUCTIONS.md`.
 2. Realtime on this host over the tunnel, including the final word after Stop.
+
+### Open defect found after deployment
+
+The tunnelled realtime session closes with WebSocket `1011 keepalive ping
+timeout`, and the session reports `0 blocks` — the worker received no audio.
+Diagnosed but deliberately not fixed. Full evidence, the two candidate causes and
+the tests that separate them are in
+[`docs/realtime-tunnel-keepalive.md`](realtime-tunnel-keepalive.md).
